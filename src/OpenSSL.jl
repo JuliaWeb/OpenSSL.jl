@@ -14,10 +14,10 @@ using Sockets
     [x] Store the SSLContext (part of SSLStream)
 """
 
-export TLSv12ClientMethod, SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, X509Certificate, EVPCipherContext, EVPBlowFishCBC, EVPBlowFishECB,
-       EVPBlowFishCFB, EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, EVPDigestContext, digest_init, digest_update, digest_final,
-       digest, EVPMDNull, EVPMD2, EVPMD5, EVPSHA1, rsa_generate_key, add_entry, sign_certificate, adjust, eof, bytesavailable, read, unsafe_write, connect,
-       get_peer_certificate, HTTP2_ALPN, UPDATE_HTTP2_ALPN
+export TLSv12ClientMethod, TLSv12ServerMethod, SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, X509Certificate, X509Store, EVPCipherContext, EVPBlowFishCBC, EVPBlowFishECB,
+       EVPBlowFishCFB, EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, EVPDigestContext, digest_init, digest_update, digest_final, digest, EVPMDNull,
+       EVPMD2, EVPMD5, EVPSHA1, rsa_generate_key, add_entry, sign_certificate, adjust, add_cert, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
+       get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN
 
 const Option{T} = Union{Nothing,T} where {T}
 
@@ -92,18 +92,50 @@ const UPDATE_HTTP2_ALPN = "\x02h2\x08http/1.1"
       # Destination for the data.
       BIO_CTRL_DGRAM_SET_PEER = 44,
       # Next DTLS handshake timeout to adjust socket timeouts.
-      BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT = 45, BIO_CTRL_DGRAM_SET_DONT_FRAG = 48, BIO_CTRL_DGRAM_GET_MTU_OVERHEAD = 49, BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE = 50,
+      BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT = 45,
+      # Do not fragment bit for the current socket, if possible on the platform.
+      BIO_CTRL_DGRAM_SET_DONT_FRAG = 48,
+      #
+      BIO_CTRL_DGRAM_GET_MTU_OVERHEAD = 49,
       # SCTP stuff
-      BIO_CTRL_DGRAM_SCTP_ADD_AUTH_KEY = 51, BIO_CTRL_DGRAM_SCTP_NEXT_AUTH_KEY = 52, BIO_CTRL_DGRAM_SCTP_AUTH_CCS_RCVD = 53,
-      BIO_CTRL_DGRAM_SCTP_GET_SNDINFO = 60, BIO_CTRL_DGRAM_SCTP_SET_SNDINFO = 61, BIO_CTRL_DGRAM_SCTP_GET_RCVINFO = 62, BIO_CTRL_DGRAM_SCTP_SET_RCVINFO = 63,
-      BIO_CTRL_DGRAM_SCTP_GET_PRINFO = 64, BIO_CTRL_DGRAM_SCTP_SET_PRINFO = 65, BIO_CTRL_DGRAM_SCTP_SAVE_SHUTDOWN = 70,
+      BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE = 50,
+      #
+      BIO_CTRL_DGRAM_SCTP_ADD_AUTH_KEY = 51,
+      #
+      BIO_CTRL_DGRAM_SCTP_NEXT_AUTH_KEY = 52,
+      #
+      BIO_CTRL_DGRAM_SCTP_AUTH_CCS_RCVD = 53,
+      #
+      BIO_CTRL_DGRAM_SCTP_GET_SNDINFO = 60,
+      #
+      BIO_CTRL_DGRAM_SCTP_SET_SNDINFO = 61,
+      #
+      BIO_CTRL_DGRAM_SCTP_GET_RCVINFO = 62,
+      #
+      BIO_CTRL_DGRAM_SCTP_SET_RCVINFO = 63,
+      #
+      BIO_CTRL_DGRAM_SCTP_GET_PRINFO = 64,
+      #
+      BIO_CTRL_DGRAM_SCTP_SET_PRINFO = 65,
+      #
+      BIO_CTRL_DGRAM_SCTP_SAVE_SHUTDOWN = 70,
       # Set peek mode.
       BIO_CTRL_DGRAM_SET_PEEK_MODE = 71,
-      # internal BIO:
-      BIO_CTRL_SET_KTLS_SEND = 72, BIO_CTRL_SET_KTLS_SEND_CTRL_MSG = 74, BIO_CTRL_CLEAR_KTLS_CTRL_MSG = 75, BIO_CTRL_GET_KTLS_SEND = 73,
-      BIO_CTRL_GET_KTLS_RECV = 76, BIO_CTRL_DGRAM_SCTP_WAIT_FOR_DRY = 77, BIO_CTRL_DGRAM_SCTP_MSG_WAITING = 78,
+      # BIO_get_ktls_send() returns 1 if the BIO is using the Kernel TLS data-path for sending.
+      BIO_CTRL_GET_KTLS_SEND = 73,
+      # BIO_get_ktls_recv() returns 1 if the BIO is using the Kernel TLS data-path for receiving.
+      BIO_CTRL_GET_KTLS_RECV = 76,
+      #
+      BIO_CTRL_DGRAM_SCTP_WAIT_FOR_DRY = 77,
+      #
+      BIO_CTRL_DGRAM_SCTP_MSG_WAITING = 78,
       # BIO_f_prefix controls.
-      BIO_CTRL_SET_PREFIX = 79, BIO_CTRL_SET_INDENT = 80, BIO_CTRL_GET_INDENT = 81)
+      # BIO_set_prefix() sets the prefix to be used for future lines of text.
+      BIO_CTRL_SET_PREFIX = 79,
+      # BIO_set_indent() sets the indentation to be used for future lines of text, using indent.
+      BIO_CTRL_SET_INDENT = 80,
+      # BIO_get_indent() gets the current indentation.
+      BIO_CTRL_GET_INDENT = 81)
 
 # Some values are reserved until OpenSSL 3.0.0 because they were previously
 # included in SSL_OP_ALL in a 1.1.x release.
@@ -180,11 +212,7 @@ const SSL_OP_NO_DTLS_MASK = (SSL_OP_NO_DTLSv1 | SSL_OP_NO_DTLSv1_2)
     # This used to be 0x000FFFFFL before 0.9.7.
     # This used to be 0x80000BFFU before 1.1.1.
 """
-const SSL_OP_ALL = (SSL_OP_CRYPTOPRO_TLSEXT_BUG |
-                    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS |
-                    SSL_OP_LEGACY_SERVER_CONNECT |
-                    SSL_OP_TLSEXT_PADDING |
-                    SSL_OP_SAFARI_ECDHE_ECDSA_BUG)
+const SSL_OP_ALL = (SSL_OP_CRYPTOPRO_TLSEXT_BUG | SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS | SSL_OP_LEGACY_SERVER_CONNECT | SSL_OP_TLSEXT_PADDING | SSL_OP_SAFARI_ECDHE_ECDSA_BUG)
 
 """
     OpenSSL init settings.
@@ -239,8 +267,10 @@ const EVP_MAX_BLOCK_LENGTH = 32
 """
     OpenSSL exception.
 """
-mutable struct OpenSSLException <: Exception
-    OpenSSLException() = new()
+struct OpenSSLException <: Exception
+    msg::AbstractString
+
+    OpenSSLException() = new(get_error())
 end
 
 """
@@ -265,7 +295,8 @@ end
 function free(big_num_contex::BigNumContext)
     ccall((:BN_CTX_free, libcrypto), Cvoid, (BigNumContext,), big_num_contex)
 
-    return big_num_contex.bn_ctx = C_NULL
+    big_num_contex.bn_ctx = C_NULL
+    return nothing
 end
 
 """
@@ -303,7 +334,8 @@ end
 function free(big_num::BigNum)
     ccall((:BN_free, libcrypto), Cvoid, (BigNum,), big_num)
 
-    return big_num.bn = C_NULL
+    big_num.bn = C_NULL
+    return nothing
 end
 
 function Base.:+(a::BigNum, b::BigNum)::BigNum
@@ -393,7 +425,8 @@ end
 function free(rsa::RSA)
     ccall((:RSA_free, libcrypto), Cvoid, (RSA,), rsa)
 
-    return rsa.rsa = C_NULL
+    rsa.rsa = C_NULL
+    return nothing
 end
 
 const EVP_PKEY_RSA = 6 #NID_rsaEncryption
@@ -447,7 +480,8 @@ end
 function free(evp_pkey::EvpPKey)
     ccall((:EVP_PKEY_free, libcrypto), Cvoid, (EvpPKey,), evp_pkey)
 
-    return evp_pkey.evp_pkey = C_NULL
+    evp_pkey.evp_pkey = C_NULL
+    return nothing
 end
 
 """
@@ -511,7 +545,8 @@ end
 function free(evp_cipher_ctx::EVPCipherContext)
     ccall((:EVP_CIPHER_CTX_free, libcrypto), Cvoid, (EVPCipherContext,), evp_cipher_ctx)
 
-    return evp_cipher_ctx.evp_cipher_ctx = C_NULL
+    evp_cipher_ctx.evp_cipher_ctx = C_NULL
+    return nothing
 end
 
 """
@@ -551,7 +586,8 @@ end
 function free(evp_digest_ctx::EVPDigestContext)
     ccall((:EVP_MD_CTX_free, libcrypto), Cvoid, (EVPDigestContext,), evp_digest_ctx)
 
-    return evp_digest_ctx.evp_md_ctx = C_NULL
+    evp_digest_ctx.evp_md_ctx = C_NULL
+    return nothing
 end
 
 function digest_init(evp_digest_ctx::EVPDigestContext, evp_digest::EVPDigest)
@@ -573,8 +609,7 @@ function digest_final(evp_digest_ctx::EVPDigestContext)::Vector{UInt8}
     out_length = Ref{UInt32}(0)
 
     GC.@preserve out_data out_length begin
-        if ccall((:EVP_DigestFinal_ex, libcrypto), Cint, (EVPDigestContext, Ptr{UInt8}, Ptr{UInt32}), evp_digest_ctx, pointer(out_data),
-                 pointer_from_objref(out_length)) == 0
+        if ccall((:EVP_DigestFinal_ex, libcrypto), Cint, (EVPDigestContext, Ptr{UInt8}, Ptr{UInt32}), evp_digest_ctx, pointer(out_data), pointer_from_objref(out_length)) == 0
             throw(OpenSSLException())
         end
     end
@@ -657,7 +692,8 @@ end
 function free(bio_method::BIOMethod)
     ccall((:BIO_meth_free, libcrypto), Cvoid, (BIOMethod,), bio_method)
 
-    return bio_method.bio = C_NULL
+    bio_method.bio = C_NULL
+    return nothing
 end
 
 """
@@ -665,6 +701,8 @@ end
 """
 mutable struct BIO
     bio::Ptr{Cvoid}
+
+    BIO(bio::Ptr{Cvoid}) = new(bio)
 
     """
         Creates a BIO object using IO stream method.
@@ -708,7 +746,8 @@ end
 function free(bio::BIO)
     ccall((:BIO_free, libcrypto), Cvoid, (BIO,), bio)
 
-    return bio.bio = C_NULL
+    bio.bio = C_NULL
+    return nothing
 end
 
 clear(bio::BIO) = bio.bio
@@ -772,6 +811,8 @@ mutable struct BIOStream <: IO
     io::Option{IO}
 
     BIOStream(io::IO) = new(BIO(), io)
+
+    BIOStream(bio::BIO, io::IO) = new(bio, io)
 end
 
 function bio_stream_set_data(bio_stream::BIOStream)
@@ -792,123 +833,6 @@ function bio_stream_from_data(bio::BIO)::BIOStream
 end
 
 close(bio_stream::BIOStream) = free(bio_stream.bio)
-
-"""
-    SSLMethod.
-    TLSv12ClientMethod.
-"""
-mutable struct SSLMethod
-    ssl_method::Ptr{Cvoid}
-end
-
-function TLSv12ClientMethod()
-    ssl_method = ccall((:TLSv1_2_client_method, libssl), Ptr{Cvoid}, ())
-    return SSLMethod(ssl_method)
-end
-
-"""
-    This is the global context structure which is created by a server or client once per program life-time
-    and which holds mainly default values for the SSL structures which are later created for the connections.
-"""
-mutable struct SSLContext
-    ssl_ctx::Ptr{Cvoid}
-
-    function SSLContext(ssl_method::SSLMethod)
-        ssl_ctx = ccall((:SSL_CTX_new, libssl), Ptr{Cvoid}, (SSLMethod,), ssl_method)
-        if ssl_ctx == C_NULL
-            throw(OpenSSLException())
-        end
-
-        ssl_context = new(ssl_ctx)
-        finalizer(free, ssl_context)
-        return ssl_context
-    end
-end
-
-function free(ssl_context::SSLContext)
-    ccall((:SSL_CTX_free, libssl), Cvoid, (SSLContext,), ssl_context)
-
-    return ssl_context.ssl_ctx = C_NULL
-end
-
-"""
-    Sets the (external) protocol behaviour of the SSL library.
-"""
-function ssl_set_options(ssl_context::SSLContext, options::SSLOptions)
-    result = ccall((:SSL_CTX_set_options, libssl), UInt64, (SSLContext, UInt64), ssl_context, options)
-
-    return result
-end
-
-"""
-    Configures TLS ALPN (Application-Layer Protocol Negotiation).
-"""
-function ssl_set_alpn(ssl_context::SSLContext, protocol_list::String)::Cint
-    result = ccall((:SSL_CTX_set_alpn_protos, libssl), Cint, (SSLContext, Ptr{UInt8}, UInt32), ssl_context, pointer(protocol_list), length(protocol_list))
-
-    return result
-end
-
-"""
-    SSL structure for a connection.
-"""
-mutable struct SSL
-    ssl::Ptr{Cvoid}
-
-    function SSL(ssl_context::SSLContext, read_bio::BIO, write_bio::BIO)::SSL
-        ssl = ccall((:SSL_new, libssl), Ptr{Cvoid}, (SSLContext,), ssl_context)
-        if ssl == C_NULL
-            throw(OpenSSLException())
-        end
-
-        ssl = new(ssl)
-        finalizer(free, ssl)
-
-        ccall((:SSL_set_bio, libssl), Cvoid, (SSL, BIO, BIO), ssl, read_bio, write_bio)
-
-        return ssl
-    end
-end
-
-function free(ssl::SSL)
-    ccall((:SSL_free, libssl), Cvoid, (SSL,), ssl)
-
-    return ssl.ssl = C_NULL
-end
-
-function ssl_connect(ssl::SSL)
-    result = ccall((:SSL_connect, libssl), Cint, (SSL,), ssl)
-
-    ccall((:SSL_set_read_ahead, libssl), Cvoid, (SSL, Cint), ssl, Int32(1))
-
-    return result
-end
-
-function ssl_accept(ssl::SSL)::Cint
-    result = ccall((:SSL_accept, libssl), Cint, (SSL,), ssl)
-
-    ccall((:SSL_set_read_ahead, libssl), Cvoid, (SSL, Cint), ssl, Int32(1))
-
-    return result
-end
-
-function ssl_disconnect(ssl::SSL)
-    result = ccall((:SSL_shutdown, libssl), Cint, (SSL,), ssl)
-    return result
-end
-
-function get_error(ssl::SSL, ret::Cint)::Cint
-    result = ccall((:SSL_get_error, libssl), Cint, (SSL, Cint), ssl, ret)
-    return result
-end
-
-function get_error()::Int64
-    result = ccall((:ERR_get_error, libcrypto), Int64, ())
-
-    #err_string = Vector{UInt8}(1024)
-
-    return result
-end
 
 """
     ASN1_TIME.
@@ -938,7 +862,8 @@ end
 function free(asn1_time::Asn1Time)
     ccall((:ASN1_STRING_free, libcrypto), Cvoid, (Asn1Time,), asn1_time)
 
-    return asn1_time.asn1_time = C_NULL
+    asn1_time.asn1_time = C_NULL
+    return nothing
 end
 
 function Dates.adjust(asn1_time::Asn1Time, seconds::Second)
@@ -981,7 +906,8 @@ end
 function free(x509_name::X509Name)
     ccall((:X509_NAME_free, libcrypto), Cvoid, (X509Name,), x509_name)
 
-    return x509_name.x509_name = C_NULL
+    x509_name.x509_name = C_NULL
+    return nothing
 end
 
 """
@@ -998,8 +924,7 @@ function Base.String(x509_name::X509Name)::String
 end
 
 function add_entry(x509_name::X509Name, field::String, value::String)
-    if ccall((:X509_NAME_add_entry_by_txt, libcrypto), Cint, (X509Name, Cstring, Cint, Cstring, Cint, Cint, Cint), x509_name, field, MBSTRING_ASC, value, -1,
-             -1, 0) == 0
+    if ccall((:X509_NAME_add_entry_by_txt, libcrypto), Cint, (X509Name, Cstring, Cint, Cstring, Cint, Cint, Cint), x509_name, field, MBSTRING_ASC, value, -1, -1, 0) == 0
         throw(OpenSSLException())
     end
 
@@ -1051,7 +976,8 @@ end
 function free(x509_cert::X509Certificate)
     ccall((:X509_free, libcrypto), Cvoid, (X509Certificate,), x509_cert)
 
-    return x509_cert.x509 = C_NULL
+    x509_cert.x509 = C_NULL
+    return nothing
 end
 
 function Base.write(io::IO, x509_cert::X509Certificate)
@@ -1167,6 +1093,176 @@ function Base.setproperty!(x509_certificate::X509Certificate, name::Symbol, valu
 end
 
 """
+    X509 Store.
+"""
+mutable struct X509Store
+    x509_store::Ptr{Cvoid}
+
+    X509Store(x509_store::Ptr{Cvoid}) = new(x509_store)
+
+    function X509Store()
+        x509_store = ccall((:X509_STORE_new, libcrypto), Ptr{Cvoid}, ())
+        if x509_store == C_NULL
+            throw(OpenSSLException())
+        end
+
+        x509_store = new(x509_store)
+
+        finalizer(free, x509_store)
+        return x509_store
+    end
+end
+
+function free(x509_store::X509Store)
+    ccall((:X509_STORE_free, libcrypto), Cvoid, (X509Store,), x509_store)
+
+    x509_store.x509_store = C_NULL
+    return nothing
+end
+
+function add_cert(x509_store::X509Store, x509_certificate::X509Certificate)
+    if ccall((:X509_STORE_add_cert, libcrypto), Cint, (X509Store, X509Certificate), x509_store, x509_certificate) != 1
+        throw(OpenSSLException())
+    end
+end
+
+"""
+    SSLMethod.
+    TLSv12ClientMethod.
+"""
+mutable struct SSLMethod
+    ssl_method::Ptr{Cvoid}
+end
+
+function TLSv12ClientMethod()
+    ssl_method = ccall((:TLSv1_2_client_method, libssl), Ptr{Cvoid}, ())
+    if ssl_method == C_NULL
+        throw(OpenSSLException())
+    end
+
+    return SSLMethod(ssl_method)
+end
+
+function TLSv12ServerMethod()
+    ssl_method = ccall((:TLSv1_2_server_method, libssl), Ptr{Cvoid}, ())
+    if ssl_method == C_NULL
+        throw(OpenSSLException())
+    end
+
+    return SSLMethod(ssl_method)
+end
+
+"""
+    This is the global context structure which is created by a server or client once per program life-time
+    and which holds mainly default values for the SSL structures which are later created for the connections.
+"""
+mutable struct SSLContext
+    ssl_ctx::Ptr{Cvoid}
+
+    function SSLContext(ssl_method::SSLMethod)
+        ssl_ctx = ccall((:SSL_CTX_new, libssl), Ptr{Cvoid}, (SSLMethod,), ssl_method)
+        if ssl_ctx == C_NULL
+            throw(OpenSSLException())
+        end
+
+        ssl_context = new(ssl_ctx)
+        finalizer(free, ssl_context)
+        return ssl_context
+    end
+end
+
+function free(ssl_context::SSLContext)
+    ccall((:SSL_CTX_free, libssl), Cvoid, (SSLContext,), ssl_context)
+
+    ssl_context.ssl_ctx = C_NULL
+    return nothing
+end
+
+"""
+    Sets the (external) protocol behaviour of the SSL library.
+"""
+function ssl_set_options(ssl_context::SSLContext, options::SSLOptions)
+    return ccall((:SSL_CTX_set_options, libssl), UInt64, (SSLContext, UInt64), ssl_context, options)
+end
+
+"""
+    Configures TLS ALPN (Application-Layer Protocol Negotiation).
+"""
+function ssl_set_alpn(ssl_context::SSLContext, protocol_list::String)::Cint
+    return ccall((:SSL_CTX_set_alpn_protos, libssl), Cint, (SSLContext, Ptr{UInt8}, UInt32), ssl_context, pointer(protocol_list), length(protocol_list))
+end
+
+# TODO
+# int SSL_CTX_set_cipher_list(SSL_CTX *ctx, const char *str);
+
+"""
+    Configures available TLSv1.3 ciphersuites.
+"""
+function ssl_set_ciphersuites(ssl_context::SSLContext, cipher_suites::String)
+    return ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (SSLContext, Cstring), ssl_context, cipher_suites)
+end
+
+function ssl_use_certificate(ssl_context::SSLContext, x509_cert::X509Certificate)
+    return ccall((:SSL_CTX_use_certificate, libssl), Cint, (SSLContext, X509Certificate), ssl_context, x509_cert)
+end
+
+function ssl_use_private_key(ssl_context::SSLContext, evp_pkey::EvpPKey)
+    return ccall((:SSL_CTX_use_PrivateKey, libssl), Cint, (SSLContext, EvpPKey), ssl_context, evp_pkey)
+end
+
+"""
+    SSL structure for a connection.
+"""
+mutable struct SSL
+    ssl::Ptr{Cvoid}
+
+    function SSL(ssl_context::SSLContext, read_bio::BIO, write_bio::BIO)::SSL
+        ssl = ccall((:SSL_new, libssl), Ptr{Cvoid}, (SSLContext,), ssl_context)
+        if ssl == C_NULL
+            throw(OpenSSLException())
+        end
+
+        ssl = new(ssl)
+        finalizer(free, ssl)
+
+        ccall((:SSL_set_bio, libssl), Cvoid, (SSL, BIO, BIO), ssl, read_bio, write_bio)
+
+        return ssl
+    end
+end
+
+function free(ssl::SSL)
+    ccall((:SSL_free, libssl), Cvoid, (SSL,), ssl)
+
+    ssl.ssl = C_NULL
+    return nothing
+end
+
+function ssl_connect(ssl::SSL)
+    result = ccall((:SSL_connect, libssl), Cint, (SSL,), ssl)
+
+    ccall((:SSL_set_read_ahead, libssl), Cvoid, (SSL, Cint), ssl, Int32(1))
+
+    return result
+end
+
+function ssl_accept(ssl::SSL)::Cint
+    result = ccall((:SSL_accept, libssl), Cint, (SSL,), ssl)
+
+    ccall((:SSL_set_read_ahead, libssl), Cvoid, (SSL, Cint), ssl, Int32(1))
+
+    return result
+end
+
+function ssl_disconnect(ssl::SSL)
+    return ccall((:SSL_shutdown, libssl), Cint, (SSL,), ssl)
+end
+
+function get_error(ssl::SSL, ret::Cint)::Cint
+    return ccall((:SSL_get_error, libssl), Cint, (SSL, Cint), ssl, ret)
+end
+
+"""
     SSLStream.
 """
 struct SSLStream <: IO
@@ -1177,14 +1273,23 @@ struct SSLStream <: IO
     lock::ReentrantLock
 
     function SSLStream(ssl_context::SSLContext, read_stream::IO, write_stream::IO)
-        bio_read_stream = BIOStream(read_stream)
-        bio_write_stream = BIOStream(write_stream)
+        # Create a read and write BIOs.
+        bio_read::BIO = BIO()
+        bio_write::BIO = BIO()
 
-        ssl = SSL(ssl_context, bio_read_stream.bio, bio_write_stream.bio)
+        # Create a new BIOs instances (without the finalizer), as SSL will free them on close.
+        bio_read_ssl_context = BIO(bio_read.bio)
+        bio_write_ssl_context = BIO(bio_write.bio)
 
-        # On finalize call first clear function, to ensure BIO_free will not be called.
-        finalizer(clear, bio_read_stream.bio)
-        finalizer(clear, bio_write_stream.bio)
+        bio_read_stream = BIOStream(bio_read_ssl_context, read_stream)
+        bio_write_stream = BIOStream(bio_write_ssl_context, write_stream)
+
+        ssl = SSL(ssl_context, bio_read_ssl_context, bio_write_ssl_context)
+
+        # Ensure the finalization is no-op.
+        bio_read.bio = C_NULL
+        bio_write.bio = C_NULL
+        @show ssl
 
         return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock())
     end
@@ -1328,6 +1433,10 @@ function Base.eof(ssl_stream::SSLStream)::Bool
     end
 end
 
+Base.isreadable(ssl_stream::SSLStream)::Bool = !eof(ssl_stream) || isreadable(ssl_stream.bio_read_stream.io)
+
+Base.iswritable(ssl_stream::SSLStream)::Bool = iswritable(ssl_stream.bio_write_stream.io)
+
 """
     Close SSL stream.
 """
@@ -1426,8 +1535,7 @@ function Base.String(asn1_time::Asn1Time)
         return "C_NULL"
     end
 
-    iob = IOBuffer()
-    bio_stream = BIOStream(iob)
+    bio_stream = BIOStream(IOBuffer())
 
     GC.@preserve bio_stream begin
         bio_stream_set_data(bio_stream)
@@ -1437,9 +1545,8 @@ function Base.String(asn1_time::Asn1Time)
         end
     end
 
-    seek(iob, 0)
-
-    return String(read(iob))
+    seek(bio_stream.io, 0)
+    return String(read(bio_stream.io))
 end
 
 Base.show(io::IO, big_num::BigNum) = write(io, String(big_num))
@@ -1452,6 +1559,22 @@ function Base.show(io::IO, x509_cert::X509Certificate)
     return println(io, """X509Certificate:
                        subject_name: $(x509_cert.subject_name)
                        issuer_name: $(x509_cert.issuer_name)""")
+end
+
+"""
+    Error handling.
+"""
+function get_error()::String
+    bio_stream = BIOStream(IOBuffer())
+
+    GC.@preserve bio_stream begin
+        bio_stream_set_data(bio_stream)
+
+        ccall((:ERR_print_errors, libcrypto), Cvoid, (BIO,), bio_stream.bio)
+    end
+
+    seek(bio_stream.io, 0)
+    return String(read(bio_stream.io))
 end
 
 const OPEN_SSL_INIT = Ref{OpenSSLInit}()
