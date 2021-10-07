@@ -21,8 +21,8 @@ Error handling:
 
 export TLSv12ClientMethod, TLSv12ServerMethod, SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, X509Certificate, X509Store, EVPCipherContext, EVPBlowFishCBC, EVPBlowFishECB,
        EVPBlowFishCFB, EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, EVPDigestContext, digest_init, digest_update, digest_final, digest, EVPMDNull,
-       EVPMD2, EVPMD5, EVPSHA1, rsa_generate_key, add_entry, sign_certificate, adjust, add_cert, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
-       get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN
+       EVPMD2, EVPMD5, EVPSHA1, rsa_generate_key, add_entry, sign_certificate, get_public_key, adjust, add_cert, eof, isreadable, iswritable, bytesavailable, read, unsafe_write,
+       connect, get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN
 
 const Option{T} = Union{Nothing,T} where {T}
 
@@ -520,16 +520,20 @@ end
 mutable struct EvpPKey
     evp_pkey::Ptr{Cvoid}
 
+    function EvpPKey(evp_pkey::Ptr{Cvoid})::EvpPKey
+        evp_pkey = new(evp_pkey)
+        finalizer(free, evp_pkey)
+
+        return evp_pkey
+    end
+
     function EvpPKey()::EvpPKey
         evp_pkey = ccall((:EVP_PKEY_new, libcrypto), Ptr{Cvoid}, ())
         if evp_pkey == C_NULL
             throw(OpenSSLError())
         end
 
-        evp_pkey = new(evp_pkey)
-        finalizer(free, evp_pkey)
-
-        return evp_pkey
+        return EvpPKey(evp_pkey)
     end
 
     function EvpPKey(rsa::RSA)::EvpPKey
@@ -1012,7 +1016,12 @@ Dates.adjust(asn1_time::Asn1Time, years::Year) = adjust(asn1_time, Day(365 * yea
 mutable struct X509Name
     x509_name::Ptr{Cvoid}
 
-    X509Name(x509_name::Ptr{Cvoid}) = new(x509_name)
+    function X509Name(x509_name::Ptr{Cvoid})
+        x509_name = new(x509_name)
+        finalizer(free, x509_name)
+
+        return x509_name
+    end
 
     function X509Name()
         x509_name = ccall((:X509_NAME_new, libcrypto), Ptr{Cvoid}, ())
@@ -1020,8 +1029,7 @@ mutable struct X509Name
             throw(OpenSSLError())
         end
 
-        x509_name = new(x509_name)
-        finalizer(free, x509_name)
+        x509_name = X509Name(x509_name)
 
         return x509_name
     end
@@ -1105,6 +1113,15 @@ function free(x509_cert::X509Certificate)
     return nothing
 end
 
+function get_public_key(x509_cert::X509Certificate)
+    evp_pkey = ccall((:X509_get_pubkey, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
+    if evp_pkey == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return EvpPKey(evp_pkey)
+end
+
 function Base.write(io::IO, x509_cert::X509Certificate)
     bio_stream = OpenSSL.BIOStream(io)
 
@@ -1136,10 +1153,14 @@ end
 function get_subject_name(x509_cert::X509Certificate)::X509Name
     x509_name = ccall((:X509_get_subject_name, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
 
-    # x509_name is an internal pointer and must not be freed.
-    x509_name = X509Name(x509_name)
+    # Duplicate x509_name as it is an internal pointer and must not be freed.
+    x509_name = ccall((:X509_NAME_dup, libcrypto), Ptr{Cvoid}, (Ptr{Cvoid},), x509_name)
 
-    return x509_name
+    if x509_name == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return X509Name(x509_name)
 end
 
 function set_subject_name(x509_cert::X509Certificate, x509_name::X509Name)
@@ -1151,10 +1172,14 @@ end
 function get_issuer_name(x509_cert::X509Certificate)::X509Name
     x509_name = ccall((:X509_get_issuer_name, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
 
-    # x509_name is an internal pointer and must not be freed.
-    x509_name = X509Name(x509_name)
+    # Duplicate x509_name as it is an internal pointer and must not be freed.
+    x509_name = ccall((:X509_NAME_dup, libcrypto), Ptr{Cvoid}, (Ptr{Cvoid},), x509_name)
 
-    return x509_name
+    if x509_name == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return X509Name(x509_name)
 end
 
 function set_issuer_name(x509_cert::X509Certificate, x509_name::X509Name)
@@ -1711,6 +1736,23 @@ function Base.String(x509_cert::X509Certificate)
     return String(read(io))
 end
 
+function Base.String(evp_pkey::EvpPKey)
+    io = IOBuffer()
+
+    bio = BIO(BIOMethod_mem())
+
+    _ = ccall((:EVP_PKEY_print_public, libcrypto), Cint, (BIO, EvpPKey, Cint, Ptr{Cvoid}), bio, evp_pkey, 0, C_NULL)
+    _ = ccall((:EVP_PKEY_print_private, libcrypto), Cint, (BIO, EvpPKey, Cint, Ptr{Cvoid}), bio, evp_pkey, 0, C_NULL)
+    _ = ccall((:EVP_PKEY_print_params, libcrypto), Cint, (BIO, EvpPKey, Cint, Ptr{Cvoid}), bio, evp_pkey, 0, C_NULL)
+    update_tls_error_state()
+
+    result = String(bio_get_mem_data(bio))
+
+    free(bio)
+
+    return result
+end
+
 Base.show(io::IO, big_num::BigNum) = write(io, String(big_num))
 
 Base.show(io::IO, asn1_time::Asn1Time) = write(io, String(asn1_time))
@@ -1718,6 +1760,8 @@ Base.show(io::IO, asn1_time::Asn1Time) = write(io, String(asn1_time))
 Base.show(io::IO, x509_name::X509Name) = write(io, String(x509_name))
 
 Base.show(io::IO, x509_cert::X509Certificate) = write(io, String(x509_cert))
+
+Base.show(io::IO, evp_pkey::EvpPKey) = write(io, String(evp_pkey))
 
 """
     Error handling.

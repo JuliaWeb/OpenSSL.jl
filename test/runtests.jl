@@ -217,6 +217,9 @@ end
     x509_string = String(x509_certificate)
     x509_string2 = String(x509_certificate2)
 
+    public_key = get_public_key(x509_certificate)
+    @show public_key
+
     @test x509_string == x509_string2
 end
 
