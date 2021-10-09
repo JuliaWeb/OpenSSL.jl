@@ -19,10 +19,13 @@ Error handling:
     we clear the OpenSSL error queue, and store the error messages in Julia task TLS.
 """
 
-export TLSv12ClientMethod, TLSv12ServerMethod, SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, X509Certificate, X509Store, EVPCipherContext, EVPBlowFishCBC, EVPBlowFishECB,
-       EVPBlowFishCFB, EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, EVPDigestContext, digest_init, digest_update, digest_final, digest, EVPMDNull,
-       EVPMD2, EVPMD5, EVPSHA1, rsa_generate_key, add_entry, sign_certificate, get_public_key, adjust, add_cert, eof, isreadable, iswritable, bytesavailable, read, unsafe_write,
-       connect, get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN
+export TLSv12ClientMethod, TLSv12ServerMethod, SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, X509Certificate,
+    X509Request, P12Object, X509Store, EVPCipherContext,
+    EVPBlowFishCBC, EVPBlowFishECB, EVPBlowFishCFB, EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB,
+    EVPAES128OFB, EVPDigestContext, digest_init, digest_update,
+    digest_final, digest, EVPMDNull, EVPMD2, EVPMD5, EVPSHA1, rsa_generate_key, add_entry, sign_certificate,
+    sign_request, adjust, add_cert, eof, isreadable, iswritable,
+    bytesavailable, read, unsafe_write, connect, get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN
 
 const Option{T} = Union{Nothing,T} where {T}
 
@@ -33,114 +36,114 @@ const UPDATE_HTTP2_ALPN = "\x02h2\x08http/1.1"
     These are used in the following macros and are passed to BIO_ctrl().
 """
 @enum(BIOCtrl::Cint,
-      # opt - rewind/zero etc.
-      BIO_CTRL_RESET = 1,
-      # opt - are we at the eof.
-      BIO_CTRL_EOF = 2,
-      # opt - extra tit-bits.
-      BIO_CTRL_INFO = 3,
-      # man - set the 'IO' type.
-      BIO_CTRL_SET = 4,
-      # man - set the 'IO' type.
-      BIO_CTRL_GET = 5,
-      # opt - internal, used to signify change.
-      BIO_CTRL_PUSH = 6,
-      # opt - internal, used to signify change.
-      BIO_CTRL_POP = 7,
-      # man - set the 'close' on free.
-      BIO_CTRL_GET_CLOSE = 8,
-      # man - set the 'close' on free.
-      BIO_CTRL_SET_CLOSE = 9,
-      # opt - is their more data buffered.
-      BIO_CTRL_PENDING = 10,
-      # opt - 'flush' buffered output.
-      BIO_CTRL_FLUSH = 11,
-      # man - extra stuff for 'duped' BIO
-      BIO_CTRL_DUP = 12,
-      # opt - number of bytes still to writes
-      BIO_CTRL_WPENDING = 13,
-      # opt - set callback function
-      BIO_CTRL_SET_CALLBACK = 14,
-      # opt - set callback function
-      BIO_CTRL_GET_CALLBACK = 15,
-      # BIO_f_buffer special
-      BIO_CTRL_PEEK = 29,
-      # BIO_s_file special,
-      BIO_CTRL_SET_FILENAME = 30,
-      # dgram BIO stuff:
-      # BIO_s_file special.
-      BIO_CTRL_DGRAM_CONNECT = 31,
-      # allow for an externally connected socket to be passed in.
-      BIO_CTRL_DGRAM_SET_CONNECTED = 32,
-      # setsockopt, essentially.
-      BIO_CTRL_DGRAM_SET_RECV_TIMEOUT = 33,
-      # getsockopt, essentially.
-      BIO_CTRL_DGRAM_GET_RECV_TIMEOUT = 34,
-      # setsockopt, essentially.
-      BIO_CTRL_DGRAM_SET_SEND_TIMEOUT = 35,
-      # getsockopt, essentially
-      BIO_CTRL_DGRAM_GET_SEND_TIMEOUT = 36,
-      # flag whether the last.
-      BIO_CTRL_DGRAM_GET_RECV_TIMER_EXP = 37,
-      # I/O operation tiemd out.
-      BIO_CTRL_DGRAM_GET_SEND_TIMER_EXP = 38,
-      # set DF bit on egress packets
-      BIO_CTRL_DGRAM_MTU_DISCOVER = 39,
-      # as kernel for current MTU,
-      BIO_CTRL_DGRAM_QUERY_MTU = 40, BIO_CTRL_DGRAM_GET_FALLBACK_MTU = 47,
-      # get cached value for MTU.
-      BIO_CTRL_DGRAM_GET_MTU = 41,
-      # set cached value for MTU. Want to use this if asking the kernel fails.
-      BIO_CTRL_DGRAM_SET_MTU = 42,
-      # check whether the MTU was exceed in the previous write operation.
-      BIO_CTRL_DGRAM_MTU_EXCEEDED = 43, BIO_CTRL_DGRAM_GET_PEER = 46,
-      # Destination for the data.
-      BIO_CTRL_DGRAM_SET_PEER = 44,
-      # Next DTLS handshake timeout to adjust socket timeouts.
-      BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT = 45,
-      # Do not fragment bit for the current socket, if possible on the platform.
-      BIO_CTRL_DGRAM_SET_DONT_FRAG = 48,
-      #
-      BIO_CTRL_DGRAM_GET_MTU_OVERHEAD = 49,
-      # SCTP stuff
-      BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE = 50,
-      #
-      BIO_CTRL_DGRAM_SCTP_ADD_AUTH_KEY = 51,
-      #
-      BIO_CTRL_DGRAM_SCTP_NEXT_AUTH_KEY = 52,
-      #
-      BIO_CTRL_DGRAM_SCTP_AUTH_CCS_RCVD = 53,
-      #
-      BIO_CTRL_DGRAM_SCTP_GET_SNDINFO = 60,
-      #
-      BIO_CTRL_DGRAM_SCTP_SET_SNDINFO = 61,
-      #
-      BIO_CTRL_DGRAM_SCTP_GET_RCVINFO = 62,
-      #
-      BIO_CTRL_DGRAM_SCTP_SET_RCVINFO = 63,
-      #
-      BIO_CTRL_DGRAM_SCTP_GET_PRINFO = 64,
-      #
-      BIO_CTRL_DGRAM_SCTP_SET_PRINFO = 65,
-      #
-      BIO_CTRL_DGRAM_SCTP_SAVE_SHUTDOWN = 70,
-      # Set peek mode.
-      BIO_CTRL_DGRAM_SET_PEEK_MODE = 71,
-      # BIO_get_ktls_send() returns 1 if the BIO is using the Kernel TLS data-path for sending.
-      BIO_CTRL_GET_KTLS_SEND = 73,
-      # BIO_get_ktls_recv() returns 1 if the BIO is using the Kernel TLS data-path for receiving.
-      BIO_CTRL_GET_KTLS_RECV = 76,
-      #
-      BIO_CTRL_DGRAM_SCTP_WAIT_FOR_DRY = 77,
-      #
-      BIO_CTRL_DGRAM_SCTP_MSG_WAITING = 78,
-      # BIO_f_prefix controls.
-      # BIO_set_prefix() sets the prefix to be used for future lines of text.
-      BIO_CTRL_SET_PREFIX = 79,
-      # BIO_set_indent() sets the indentation to be used for future lines of text, using indent.
-      BIO_CTRL_SET_INDENT = 80,
-      # BIO_get_indent() gets the current indentation.
-      BIO_CTRL_GET_INDENT = 81)
+    # opt - rewind/zero etc.
+    BIO_CTRL_RESET = 1,
+    # opt - are we at the eof.
+    BIO_CTRL_EOF = 2,
+    # opt - extra tit-bits.
+    BIO_CTRL_INFO = 3,
+    # man - set the 'IO' type.
+    BIO_CTRL_SET = 4,
+    # man - set the 'IO' type.
+    BIO_CTRL_GET = 5,
+    # opt - internal, used to signify change.
+    BIO_CTRL_PUSH = 6,
+    # opt - internal, used to signify change.
+    BIO_CTRL_POP = 7,
+    # man - set the 'close' on free.
+    BIO_CTRL_GET_CLOSE = 8,
+    # man - set the 'close' on free.
+    BIO_CTRL_SET_CLOSE = 9,
+    # opt - is their more data buffered.
+    BIO_CTRL_PENDING = 10,
+    # opt - 'flush' buffered output.
+    BIO_CTRL_FLUSH = 11,
+    # man - extra stuff for 'duped' BIO
+    BIO_CTRL_DUP = 12,
+    # opt - number of bytes still to writes
+    BIO_CTRL_WPENDING = 13,
+    # opt - set callback function
+    BIO_CTRL_SET_CALLBACK = 14,
+    # opt - set callback function
+    BIO_CTRL_GET_CALLBACK = 15,
+    # BIO_f_buffer special
+    BIO_CTRL_PEEK = 29,
+    # BIO_s_file special,
+    BIO_CTRL_SET_FILENAME = 30,
+    # dgram BIO stuff:
+    # BIO_s_file special.
+    BIO_CTRL_DGRAM_CONNECT = 31,
+    # allow for an externally connected socket to be passed in.
+    BIO_CTRL_DGRAM_SET_CONNECTED = 32,
+    # setsockopt, essentially.
+    BIO_CTRL_DGRAM_SET_RECV_TIMEOUT = 33,
+    # getsockopt, essentially.
+    BIO_CTRL_DGRAM_GET_RECV_TIMEOUT = 34,
+    # setsockopt, essentially.
+    BIO_CTRL_DGRAM_SET_SEND_TIMEOUT = 35,
+    # getsockopt, essentially
+    BIO_CTRL_DGRAM_GET_SEND_TIMEOUT = 36,
+    # flag whether the last.
+    BIO_CTRL_DGRAM_GET_RECV_TIMER_EXP = 37,
+    # I/O operation tiemd out.
+    BIO_CTRL_DGRAM_GET_SEND_TIMER_EXP = 38,
+    # set DF bit on egress packets
+    BIO_CTRL_DGRAM_MTU_DISCOVER = 39,
+    # as kernel for current MTU,
+    BIO_CTRL_DGRAM_QUERY_MTU = 40, BIO_CTRL_DGRAM_GET_FALLBACK_MTU = 47,
+    # get cached value for MTU.
+    BIO_CTRL_DGRAM_GET_MTU = 41,
+    # set cached value for MTU. Want to use this if asking the kernel fails.
+    BIO_CTRL_DGRAM_SET_MTU = 42,
+    # check whether the MTU was exceed in the previous write operation.
+    BIO_CTRL_DGRAM_MTU_EXCEEDED = 43, BIO_CTRL_DGRAM_GET_PEER = 46,
+    # Destination for the data.
+    BIO_CTRL_DGRAM_SET_PEER = 44,
+    # Next DTLS handshake timeout to adjust socket timeouts.
+    BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT = 45,
+    # Do not fragment bit for the current socket, if possible on the platform.
+    BIO_CTRL_DGRAM_SET_DONT_FRAG = 48,
+    #
+    BIO_CTRL_DGRAM_GET_MTU_OVERHEAD = 49,
+    # SCTP stuff
+    BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE = 50,
+    #
+    BIO_CTRL_DGRAM_SCTP_ADD_AUTH_KEY = 51,
+    #
+    BIO_CTRL_DGRAM_SCTP_NEXT_AUTH_KEY = 52,
+    #
+    BIO_CTRL_DGRAM_SCTP_AUTH_CCS_RCVD = 53,
+    #
+    BIO_CTRL_DGRAM_SCTP_GET_SNDINFO = 60,
+    #
+    BIO_CTRL_DGRAM_SCTP_SET_SNDINFO = 61,
+    #
+    BIO_CTRL_DGRAM_SCTP_GET_RCVINFO = 62,
+    #
+    BIO_CTRL_DGRAM_SCTP_SET_RCVINFO = 63,
+    #
+    BIO_CTRL_DGRAM_SCTP_GET_PRINFO = 64,
+    #
+    BIO_CTRL_DGRAM_SCTP_SET_PRINFO = 65,
+    #
+    BIO_CTRL_DGRAM_SCTP_SAVE_SHUTDOWN = 70,
+    # Set peek mode.
+    BIO_CTRL_DGRAM_SET_PEEK_MODE = 71,
+    # BIO_get_ktls_send() returns 1 if the BIO is using the Kernel TLS data-path for sending.
+    BIO_CTRL_GET_KTLS_SEND = 73,
+    # BIO_get_ktls_recv() returns 1 if the BIO is using the Kernel TLS data-path for receiving.
+    BIO_CTRL_GET_KTLS_RECV = 76,
+    #
+    BIO_CTRL_DGRAM_SCTP_WAIT_FOR_DRY = 77,
+    #
+    BIO_CTRL_DGRAM_SCTP_MSG_WAITING = 78,
+    # BIO_f_prefix controls.
+    # BIO_set_prefix() sets the prefix to be used for future lines of text.
+    BIO_CTRL_SET_PREFIX = 79,
+    # BIO_set_indent() sets the indentation to be used for future lines of text, using indent.
+    BIO_CTRL_SET_INDENT = 80,
+    # BIO_get_indent() gets the current indentation.
+    BIO_CTRL_GET_INDENT = 81)
 
 """
     Classes of BIOs.
@@ -154,52 +157,52 @@ const BIO_TYPE_SOURCE_SINK = 0x0400
     BIO types.
 """
 @enum(BIOType::Cint,
-      #
-      BIO_TYPE_NONE = 0,
-      #
-      BIO_TYPE_MEM = 1 | BIO_TYPE_SOURCE_SINK,
-      #
-      BIO_TYPE_FILE = 2 | BIO_TYPE_SOURCE_SINK,
-      #
-      BIO_TYPE_FD = 4 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
-      #
-      BIO_TYPE_SOCKET = 5 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
-      #
-      BIO_TYPE_NULL = 6 | BIO_TYPE_SOURCE_SINK,
-      #
-      BIO_TYPE_SSL = 7 | BIO_TYPE_FILTER,
-      # Message digest BIO filter.
-      BIO_TYPE_MD = 8 | BIO_TYPE_FILTER,
-      #
-      BIO_TYPE_BUFFER = 9 | BIO_TYPE_FILTER,
-      # 
-      BIO_TYPE_CIPHER = 10 | BIO_TYPE_FILTER,
-      #
-      BIO_TYPE_BASE64 = 11 | BIO_TYPE_FILTER,
-      #
-      BIO_TYPE_CONNECT = 12 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
-      #
-      BIO_TYPE_ACCEPT = 13 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
-      # server proxy BIO
-      BIO_TYPE_NBIO_TEST = 16 | BIO_TYPE_FILTER,
-      #
-      BIO_TYPE_NULL_FILTER = 17 | BIO_TYPE_FILTER,
-      # Half a BIO pair.
-      BIO_TYPE_BIO = 19 | BIO_TYPE_SOURCE_SINK,
-      #
-      BIO_TYPE_LINEBUFFER = 20 | BIO_TYPE_FILTER,
-      #
-      BIO_TYPE_DGRAM = 21 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
-      #
-      BIO_TYPE_ASN1 = 22 | BIO_TYPE_FILTER,
-      #
-      BIO_TYPE_COMP = 23 | BIO_TYPE_FILTER,
-      #
-      BIO_TYPE_DGRAM_SCTP = 24 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
-      #
-      BIO_TYPE_CORE_TO_PROV = 25 | BIO_TYPE_SOURCE_SINK,
-      #
-      BIO_TYPE_START = 128)
+    #
+    BIO_TYPE_NONE = 0,
+    #
+    BIO_TYPE_MEM = 1 | BIO_TYPE_SOURCE_SINK,
+    #
+    BIO_TYPE_FILE = 2 | BIO_TYPE_SOURCE_SINK,
+    #
+    BIO_TYPE_FD = 4 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
+    #
+    BIO_TYPE_SOCKET = 5 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
+    #
+    BIO_TYPE_NULL = 6 | BIO_TYPE_SOURCE_SINK,
+    #
+    BIO_TYPE_SSL = 7 | BIO_TYPE_FILTER,
+    # Message digest BIO filter.
+    BIO_TYPE_MD = 8 | BIO_TYPE_FILTER,
+    #
+    BIO_TYPE_BUFFER = 9 | BIO_TYPE_FILTER,
+    # 
+    BIO_TYPE_CIPHER = 10 | BIO_TYPE_FILTER,
+    #
+    BIO_TYPE_BASE64 = 11 | BIO_TYPE_FILTER,
+    #
+    BIO_TYPE_CONNECT = 12 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
+    #
+    BIO_TYPE_ACCEPT = 13 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
+    # server proxy BIO
+    BIO_TYPE_NBIO_TEST = 16 | BIO_TYPE_FILTER,
+    #
+    BIO_TYPE_NULL_FILTER = 17 | BIO_TYPE_FILTER,
+    # Half a BIO pair.
+    BIO_TYPE_BIO = 19 | BIO_TYPE_SOURCE_SINK,
+    #
+    BIO_TYPE_LINEBUFFER = 20 | BIO_TYPE_FILTER,
+    #
+    BIO_TYPE_DGRAM = 21 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
+    #
+    BIO_TYPE_ASN1 = 22 | BIO_TYPE_FILTER,
+    #
+    BIO_TYPE_COMP = 23 | BIO_TYPE_FILTER,
+    #
+    BIO_TYPE_DGRAM_SCTP = 24 | BIO_TYPE_SOURCE_SINK | BIO_TYPE_DESCRIPTOR,
+    #
+    BIO_TYPE_CORE_TO_PROV = 25 | BIO_TYPE_SOURCE_SINK,
+    #
+    BIO_TYPE_START = 128)
 
 # Some values are reserved until OpenSSL 3.0.0 because they were previously
 # included in SSL_OP_ALL in a 1.1.x release.
@@ -276,7 +279,9 @@ const SSL_OP_NO_DTLS_MASK = SSL_OP_NO_DTLSv1 | SSL_OP_NO_DTLSv1_2
     # This used to be 0x000FFFFFL before 0.9.7.
     # This used to be 0x80000BFFU before 1.1.1.
 """
-const SSL_OP_ALL = SSL_OP_CRYPTOPRO_TLSEXT_BUG | SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS | SSL_OP_LEGACY_SERVER_CONNECT | SSL_OP_TLSEXT_PADDING | SSL_OP_SAFARI_ECDHE_ECDSA_BUG
+const SSL_OP_ALL =
+    SSL_OP_CRYPTOPRO_TLSEXT_BUG | SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS | SSL_OP_LEGACY_SERVER_CONNECT |
+    SSL_OP_TLSEXT_PADDING | SSL_OP_SAFARI_ECDHE_ECDSA_BUG
 
 """
     OpenSSL init settings.
@@ -310,14 +315,14 @@ const OPENSSL_INIT_SSL_DEFAULT = OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LO
 const MBSTRING_FLAG = 0x1000
 
 @enum(MBStringFlags::Int32,
-      # Utf8 encoding
-      MBSTRING_UTF8 = MBSTRING_FLAG,
-      # Latin1 encoding
-      MBSTRING_ASC = MBSTRING_FLAG | 1,
-      # UCS2 encoding
-      MBSTRING_BMP = MBSTRING_FLAG | 2,
-      # Universal string, Utf32 encoding
-      MBSTRING_UNIV = MBSTRING_FLAG | 4)
+    # Utf8 encoding
+    MBSTRING_UTF8 = MBSTRING_FLAG,
+    # Latin1 encoding
+    MBSTRING_ASC = MBSTRING_FLAG | 1,
+    # UCS2 encoding
+    MBSTRING_BMP = MBSTRING_FLAG | 2,
+    # Universal string, Utf32 encoding
+    MBSTRING_UNIV = MBSTRING_FLAG | 4)
 
 # Longest known is SHA512.
 const EVP_MAX_MD_SIZE = 64
@@ -344,7 +349,10 @@ mutable struct BigNumContext
     bn_ctx::Ptr{Cvoid}
 
     function BigNumContext()
-        big_num_contex = ccall((:BN_CTX_secure_new, libcrypto), Ptr{Cvoid}, ())
+        big_num_contex = ccall(
+            (:BN_CTX_secure_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if big_num_contex == C_NULL
             throw(OpenSSLError())
         end
@@ -357,7 +365,11 @@ mutable struct BigNumContext
 end
 
 function free(big_num_contex::BigNumContext)
-    ccall((:BN_CTX_free, libcrypto), Cvoid, (BigNumContext,), big_num_contex)
+    ccall(
+        (:BN_CTX_free, libcrypto),
+        Cvoid,
+        (BigNumContext,),
+        big_num_contex)
 
     big_num_contex.bn_ctx = C_NULL
     return nothing
@@ -370,7 +382,10 @@ mutable struct BigNum
     bn::Ptr{Cvoid}
 
     function BigNum()
-        big_num = ccall((:BN_new, libcrypto), Ptr{Cvoid}, ())
+        big_num = ccall(
+            (:BN_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if big_num == C_NULL
             throw(OpenSSLError())
         end
@@ -387,7 +402,11 @@ mutable struct BigNum
 
     function BigNum(value::UInt64)
         big_num = BigNum()
-        if ccall((:BN_set_word, libcrypto), Cint, (BigNum, UInt64), big_num, value) == 0
+        if ccall(
+            (:BN_set_word, libcrypto),
+            Cint,
+            (BigNum, UInt64),
+            big_num, value) == 0
             throw(OpenSSLError())
         end
 
@@ -396,7 +415,11 @@ mutable struct BigNum
 end
 
 function free(big_num::BigNum)
-    ccall((:BN_free, libcrypto), Cvoid, (BigNum,), big_num)
+    ccall(
+        (:BN_free, libcrypto),
+        Cvoid,
+        (BigNum,),
+        big_num)
 
     big_num.bn = C_NULL
     return nothing
@@ -405,7 +428,13 @@ end
 function Base.:+(a::BigNum, b::BigNum)::BigNum
     r = BigNum()
 
-    if ccall((:BN_add, libcrypto), Cint, (BigNum, BigNum, BigNum), r, a, b) == 0
+    if ccall(
+        (:BN_add, libcrypto),
+        Cint,
+        (BigNum, BigNum, BigNum),
+        r,
+        a,
+        b) == 0
         throw(OpenSSLError())
     end
 
@@ -415,7 +444,13 @@ end
 function Base.:-(a::BigNum, b::BigNum)::BigNum
     r = BigNum()
 
-    if ccall((:BN_sub, libcrypto), Cint, (BigNum, BigNum, BigNum), r, a, b) == 0
+    if ccall(
+        (:BN_sub, libcrypto),
+        Cint,
+        (BigNum, BigNum, BigNum),
+        r,
+        a,
+        b) == 0
         throw(OpenSSLError())
     end
 
@@ -427,7 +462,14 @@ function Base.:*(a::BigNum, b::BigNum)::BigNum
 
     c = BigNumContext()
 
-    if ccall((:BN_mul, libcrypto), Cint, (BigNum, BigNum, BigNum, BigNumContext), r, a, b, c) == 0
+    if ccall(
+        (:BN_mul, libcrypto),
+        Cint,
+        (BigNum, BigNum, BigNum, BigNumContext),
+        r,
+        a,
+        b,
+        c) == 0
         throw(OpenSSLError())
     end
 
@@ -442,7 +484,15 @@ function Base.:/(a::BigNum, b::BigNum)::BigNum
 
     c = BigNumContext()
 
-    if ccall((:BN_div, libcrypto), Cint, (BigNum, BigNum, BigNum, BigNum, BigNumContext), dv, rm, a, b, c) == 0
+    if ccall(
+        (:BN_div, libcrypto),
+        Cint,
+        (BigNum, BigNum, BigNum, BigNum, BigNumContext),
+        dv,
+        rm,
+        a,
+        b,
+        c) == 0
         throw(OpenSSLError())
     end
 
@@ -458,7 +508,15 @@ function Base.:%(a::BigNum, b::BigNum)::BigNum
 
     c = BigNumContext()
 
-    if ccall((:BN_div, libcrypto), Cint, (BigNum, BigNum, BigNum, BigNum, BigNumContext), dv, rm, a, b, c) == 0
+    if ccall(
+        (:BN_div, libcrypto),
+        Cint,
+        (BigNum, BigNum, BigNum, BigNum, BigNumContext),
+        dv,
+        rm,
+        a,
+        b,
+        c) == 0
         throw(OpenSSLError())
     end
 
@@ -477,7 +535,10 @@ mutable struct RSA
     rsa::Ptr{Cvoid}
 
     function RSA()
-        rsa = ccall((:RSA_new, libcrypto), Ptr{Cvoid}, ())
+        rsa = ccall(
+            (:RSA_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if rsa == C_NULL
             throw(OpenSSLError())
         end
@@ -490,7 +551,11 @@ mutable struct RSA
 end
 
 function free(rsa::RSA)
-    ccall((:RSA_free, libcrypto), Cvoid, (RSA,), rsa)
+    ccall(
+        (:RSA_free, libcrypto),
+        Cvoid,
+        (RSA,),
+        rsa)
 
     rsa.rsa = C_NULL
     return nothing
@@ -507,7 +572,14 @@ function rsa_generate_key(; bits::Int32=Int32(2048))::RSA
     rsa = RSA()
     big_num = BigNum(UInt64(RSA_F4))
 
-    if ccall((:RSA_generate_key_ex, libcrypto), Cint, (RSA, Cint, BigNum, Ptr{Cvoid}), rsa, bits, big_num, C_NULL) != 1
+    if ccall(
+        (:RSA_generate_key_ex, libcrypto),
+        Cint,
+        (RSA, Cint, BigNum, Ptr{Cvoid}),
+        rsa,
+        bits,
+        big_num,
+        C_NULL) != 1
         throw(OpenSSLError())
     end
 
@@ -528,7 +600,10 @@ mutable struct EvpPKey
     end
 
     function EvpPKey()::EvpPKey
-        evp_pkey = ccall((:EVP_PKEY_new, libcrypto), Ptr{Cvoid}, ())
+        evp_pkey = ccall(
+            (:EVP_PKEY_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if evp_pkey == C_NULL
             throw(OpenSSLError())
         end
@@ -539,7 +614,12 @@ mutable struct EvpPKey
     function EvpPKey(rsa::RSA)::EvpPKey
         evp_pkey = EvpPKey()
 
-        if ccall((:EVP_PKEY_assign, libcrypto), Cint, (EvpPKey, Cint, RSA), evp_pkey, EVP_PKEY_RSA, rsa) == 0
+        if ccall(
+            (:EVP_PKEY_assign, libcrypto),
+            Cint, (EvpPKey, Cint, RSA),
+            evp_pkey,
+            EVP_PKEY_RSA,
+            rsa) == 0
             throw(OpenSSLError())
         end
 
@@ -549,7 +629,11 @@ mutable struct EvpPKey
 end
 
 function free(evp_pkey::EvpPKey)
-    ccall((:EVP_PKEY_free, libcrypto), Cvoid, (EvpPKey,), evp_pkey)
+    ccall(
+        (:EVP_PKEY_free, libcrypto),
+        Cvoid,
+        (EvpPKey,),
+        evp_pkey)
 
     evp_pkey.evp_pkey = C_NULL
     return nothing
@@ -601,7 +685,10 @@ mutable struct EVPCipherContext
     evp_cipher_ctx::Ptr{Cvoid}
 
     function EVPCipherContext()
-        evp_cipher_ctx = ccall((:EVP_CIPHER_CTX_new, libcrypto), Ptr{Cvoid}, ())
+        evp_cipher_ctx = ccall(
+            (:EVP_CIPHER_CTX_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if evp_cipher_ctx == C_NULL
             throw(OpenSSLError())
         end
@@ -614,7 +701,11 @@ mutable struct EVPCipherContext
 end
 
 function free(evp_cipher_ctx::EVPCipherContext)
-    ccall((:EVP_CIPHER_CTX_free, libcrypto), Cvoid, (EVPCipherContext,), evp_cipher_ctx)
+    ccall(
+        (:EVP_CIPHER_CTX_free, libcrypto),
+        Cvoid,
+        (EVPCipherContext,),
+        evp_cipher_ctx)
 
     evp_cipher_ctx.evp_cipher_ctx = C_NULL
     return nothing
@@ -635,6 +726,14 @@ EVPMD5()::EVPDigest = EVPDigest(ccall((:EVP_md5, libcrypto), Ptr{Cvoid}, ()))
 
 EVPSHA1()::EVPDigest = EVPDigest(ccall((:EVP_sha1, libcrypto), Ptr{Cvoid}, ()))
 
+EVPSHA224()::EVPDigest = EVPDigest(ccall((:EVP_sha224, libcrypto), Ptr{Cvoid}, ()))
+
+EVPSHA256()::EVPDigest = EVPDigest(ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, ()))
+
+EVPSHA384()::EVPDigest = EVPDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, ()))
+
+EVPSHA512()::EVPDigest = EVPDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
+
 """
     EVP Message Digest Context.
 """
@@ -642,7 +741,10 @@ mutable struct EVPDigestContext
     evp_md_ctx::Ptr{Cvoid}
 
     function EVPDigestContext()
-        evp_digest_ctx = ccall((:EVP_MD_CTX_new, libcrypto), Ptr{Cvoid}, ())
+        evp_digest_ctx = ccall(
+            (:EVP_MD_CTX_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if evp_digest_ctx == C_NULL
             throw(OpenSSLError())
         end
@@ -655,21 +757,37 @@ mutable struct EVPDigestContext
 end
 
 function free(evp_digest_ctx::EVPDigestContext)
-    ccall((:EVP_MD_CTX_free, libcrypto), Cvoid, (EVPDigestContext,), evp_digest_ctx)
+    ccall(
+        (:EVP_MD_CTX_free, libcrypto),
+        Cvoid,
+        (EVPDigestContext,),
+        evp_digest_ctx)
 
     evp_digest_ctx.evp_md_ctx = C_NULL
     return nothing
 end
 
 function digest_init(evp_digest_ctx::EVPDigestContext, evp_digest::EVPDigest)
-    if ccall((:EVP_DigestInit_ex, libcrypto), Cint, (EVPDigestContext, EVPDigest, Ptr{Cvoid}), evp_digest_ctx, evp_digest, C_NULL) == 0
+    if ccall(
+        (:EVP_DigestInit_ex, libcrypto),
+        Cint,
+        (EVPDigestContext, EVPDigest, Ptr{Cvoid}),
+        evp_digest_ctx,
+        evp_digest,
+        C_NULL) == 0
         throw(OpenSSLError())
     end
 end
 
 function digest_update(evp_digest_ctx::EVPDigestContext, in_data::Vector{UInt8})
     GC.@preserve in_data begin
-        if ccall((:EVP_DigestUpdate, libcrypto), Cint, (EVPDigestContext, Ptr{UInt8}, Csize_t), evp_digest_ctx, pointer(in_data), length(in_data)) == 0
+        if ccall(
+            (:EVP_DigestUpdate, libcrypto),
+            Cint,
+            (EVPDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx,
+            pointer(in_data),
+            length(in_data)) == 0
             throw(OpenSSLError())
         end
     end
@@ -680,7 +798,13 @@ function digest_final(evp_digest_ctx::EVPDigestContext)::Vector{UInt8}
     out_length = Ref{UInt32}(0)
 
     GC.@preserve out_data out_length begin
-        if ccall((:EVP_DigestFinal_ex, libcrypto), Cint, (EVPDigestContext, Ptr{UInt8}, Ptr{UInt32}), evp_digest_ctx, pointer(out_data), pointer_from_objref(out_length)) == 0
+        if ccall(
+            (:EVP_DigestFinal_ex, libcrypto),
+            Cint,
+            (EVPDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            evp_digest_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length)) == 0
             throw(OpenSSLError())
         end
     end
@@ -720,12 +844,20 @@ mutable struct BIOMethod
     BIOMethod(bio_method::Ptr{Cvoid}) = new(bio_method)
 
     function BIOMethod(bio_type::String)
-        bio_method_index = ccall((:BIO_get_new_index, libcrypto), Cint, ())
+        bio_method_index = ccall(
+            (:BIO_get_new_index, libcrypto),
+            Cint,
+            ())
         if bio_method_index == -1
             throw(OpenSSLError())
         end
 
-        bio_method = ccall((:BIO_meth_new, libcrypto), Ptr{Cvoid}, (Cint, Cstring), bio_method_index, bio_type)
+        bio_method = ccall(
+            (:BIO_meth_new, libcrypto),
+            Ptr{Cvoid},
+            (Cint, Cstring),
+            bio_method_index,
+            bio_type)
         if bio_method == C_NULL
             throw(OpenSSLError())
         end
@@ -733,27 +865,57 @@ mutable struct BIOMethod
         bio_method = new(bio_method)
         finalizer(free, bio_method)
 
-        if ccall((:BIO_meth_set_create, libcrypto), Cint, (BIOMethod, Ptr{Cvoid}), bio_method, BIO_STREAM_CALLBACKS.x.on_bio_create_ptr) != 1
+        if ccall(
+            (:BIO_meth_set_create, libcrypto),
+            Cint,
+            (BIOMethod, Ptr{Cvoid}),
+            bio_method,
+            BIO_STREAM_CALLBACKS.x.on_bio_create_ptr) != 1
             throw(OpenSSLError())
         end
 
-        if ccall((:BIO_meth_set_destroy, libcrypto), Cint, (BIOMethod, Ptr{Cvoid}), bio_method, BIO_STREAM_CALLBACKS.x.on_bio_destroy_ptr) != 1
+        if ccall(
+            (:BIO_meth_set_destroy, libcrypto),
+            Cint,
+            (BIOMethod, Ptr{Cvoid}),
+            bio_method,
+            BIO_STREAM_CALLBACKS.x.on_bio_destroy_ptr) != 1
             throw(OpenSSLError())
         end
 
-        if ccall((:BIO_meth_set_read, libcrypto), Cint, (BIOMethod, Ptr{Cvoid}), bio_method, BIO_STREAM_CALLBACKS.x.on_bio_read_ptr) != 1
+        if ccall(
+            (:BIO_meth_set_read, libcrypto),
+            Cint,
+            (BIOMethod, Ptr{Cvoid}),
+            bio_method,
+            BIO_STREAM_CALLBACKS.x.on_bio_read_ptr) != 1
             throw(OpenSSLError())
         end
 
-        if ccall((:BIO_meth_set_write, libcrypto), Cint, (BIOMethod, Ptr{Cvoid}), bio_method, BIO_STREAM_CALLBACKS.x.on_bio_write_ptr) != 1
+        if ccall(
+            (:BIO_meth_set_write, libcrypto),
+            Cint,
+            (BIOMethod, Ptr{Cvoid}),
+            bio_method,
+            BIO_STREAM_CALLBACKS.x.on_bio_write_ptr) != 1
             throw(OpenSSLError())
         end
 
-        if ccall((:BIO_meth_set_puts, libcrypto), Cint, (BIOMethod, Ptr{Cvoid}), bio_method, BIO_STREAM_CALLBACKS.x.on_bio_puts_ptr) != 1
+        if ccall(
+            (:BIO_meth_set_puts, libcrypto),
+            Cint,
+            (BIOMethod, Ptr{Cvoid}),
+            bio_method,
+            BIO_STREAM_CALLBACKS.x.on_bio_puts_ptr) != 1
             throw(OpenSSLError())
         end
 
-        if ccall((:BIO_meth_set_ctrl, libcrypto), Cint, (BIOMethod, Ptr{Cvoid}), bio_method, BIO_STREAM_CALLBACKS.x.on_bio_ctrl_ptr) != 1
+        if ccall(
+            (:BIO_meth_set_ctrl, libcrypto),
+            Cint,
+            (BIOMethod, Ptr{Cvoid}),
+            bio_method,
+            BIO_STREAM_CALLBACKS.x.on_bio_ctrl_ptr) != 1
             throw(OpenSSLError())
         end
 
@@ -765,7 +927,10 @@ end
     Creates a file descriptor BIO method.
 """
 function BIOMethod_fd()::BIOMethod
-    bio_method = ccall((:BIO_s_fd, libcrypto), Ptr{Cvoid}, ())
+    bio_method = ccall(
+        (:BIO_s_fd, libcrypto),
+        Ptr{Cvoid},
+        ())
 
     return BIOMethod(bio_method)
 end
@@ -774,13 +939,20 @@ end
     Creates a memory BIO method.
 """
 function BIOMethod_mem()::BIOMethod
-    bio_method = ccall((:BIO_s_mem, libcrypto), Ptr{Cvoid}, ())
+    bio_method = ccall(
+        (:BIO_s_mem, libcrypto),
+        Ptr{Cvoid},
+        ())
 
     return BIOMethod(bio_method)
 end
 
 function free(bio_method::BIOMethod)
-    ccall((:BIO_meth_free, libcrypto), Cvoid, (BIOMethod,), bio_method)
+    ccall(
+        (:BIO_meth_free, libcrypto),
+        Cvoid,
+        (BIOMethod,),
+        bio_method)
 
     bio_method.bio_method = C_NULL
     return nothing
@@ -799,7 +971,11 @@ mutable struct BIO
         The BIO object is not registered with the finalizer.
     """
     function BIO()
-        bio = ccall((:BIO_new, libcrypto), Ptr{Cvoid}, (BIOMethod,), BIO_STREAM_METHOD.x)
+        bio = ccall(
+            (:BIO_new, libcrypto),
+            Ptr{Cvoid},
+            (BIOMethod,),
+            BIO_STREAM_METHOD.x)
         if bio == C_NULL
             throw(OpenSSLError())
         end
@@ -807,12 +983,27 @@ mutable struct BIO
         bio = new(bio)
         finalizer(free, bio)
 
-        ccall((:BIO_set_data, libcrypto), Cvoid, (BIO, Ptr{Cvoid}), bio, C_NULL)
+        ccall(
+            (:BIO_set_data, libcrypto),
+            Cvoid,
+            (BIO, Ptr{Cvoid}),
+            bio,
+            C_NULL)
 
         # Mark BIO as initalized.
-        ccall((:BIO_set_init, libcrypto), Cvoid, (BIO, Cint), bio, 1)
+        ccall(
+            (:BIO_set_init, libcrypto),
+            Cvoid,
+            (BIO, Cint),
+            bio,
+            1)
 
-        ccall((:BIO_set_shutdown, libcrypto), Cvoid, (BIO, Cint), bio, 0)
+        ccall(
+            (:BIO_set_shutdown, libcrypto),
+            Cvoid,
+            (BIO, Cint),
+            bio,
+            0)
 
         return bio
     end
@@ -821,7 +1012,11 @@ mutable struct BIO
         Creates BIO for given BIOMethod.
     """
     function BIO(bio_method::BIOMethod)
-        bio = ccall((:BIO_new, libcrypto), Ptr{Cvoid}, (BIOMethod,), bio_method)
+        bio = ccall(
+            (:BIO_new, libcrypto),
+            Ptr{Cvoid},
+            (BIOMethod,),
+            bio_method)
         if bio == C_NULL
             throw(OpenSSLError())
         end
@@ -834,7 +1029,11 @@ mutable struct BIO
 end
 
 function free(bio::BIO)
-    ccall((:BIO_free, libcrypto), Cvoid, (BIO,), bio)
+    ccall(
+        (:BIO_free, libcrypto),
+        Cvoid,
+        (BIO,),
+        bio)
 
     bio.bio = C_NULL
     return nothing
@@ -846,7 +1045,11 @@ clear(bio::BIO) = bio.bio
     Returns the BIO type.
 """
 function bio_type(bio::BIO)::BIOType
-    bio_type = ccall((:BIO_method_type, libcrypto), Cint, (BIO,), bio)
+    bio_type = ccall(
+        (:BIO_method_type, libcrypto),
+        Cint,
+        (BIO,),
+        bio)
 
     return BIOType(bio_type)
 end
@@ -863,7 +1066,14 @@ function bio_get_mem_data(bio::BIO)
     # define BIO_get_mem_data(b,pp)  BIO_ctrl(b,BIO_CTRL_INFO,0,(char *)(pp))
     mem_ptr = Ref{Ptr{UInt8}}(0)
     mem_data = GC.@preserve mem_ptr begin
-        result = ccall((:BIO_ctrl, libcrypto), Clong, (BIO, BIOCtrl, Clong, Ptr{Ptr{Cvoid}}), bio, BIO_CTRL_INFO, 0, pointer_from_objref(mem_ptr))
+        result = ccall(
+            (:BIO_ctrl, libcrypto),
+            Clong,
+            (BIO, BIOCtrl, Clong, Ptr{Ptr{Cvoid}}),
+            bio,
+            BIO_CTRL_INFO,
+            0,
+            pointer_from_objref(mem_ptr))
         if mem_ptr.x != C_NULL
             return unsafe_wrap(Vector{UInt8}, mem_ptr.x, result; own=false)
         else
@@ -879,7 +1089,13 @@ end
 """
 ## throw error here
 function Base.unsafe_write(bio::BIO, out_buffer::Ptr{UInt8}, out_length::Int)
-    result = ccall((:BIO_write, libcrypto), Cint, (BIO, Ptr{Cvoid}, Cint), bio, out_buffer, out_length)
+    result = ccall(
+        (:BIO_write, libcrypto),
+        Cint,
+        (BIO, Ptr{Cvoid}, Cint),
+        bio,
+        out_buffer,
+        out_length)
     if result < 0
         throw(OpenSSLError())
     end
@@ -896,9 +1112,19 @@ Base.write(bio::BIO, out_data) = return unsafe_write(bio, pointer(out_data), len
 """
 function on_bio_stream_create(bio::BIO)::Cint
     # Initalize BIO.
-    ccall((:BIO_set_init, libcrypto), Cvoid, (BIO, Cint), bio, 0)
+    ccall(
+        (:BIO_set_init, libcrypto),
+        Cvoid,
+        (BIO, Cint),
+        bio,
+        0)
 
-    ccall((:BIO_set_data, libcrypto), Cvoid, (BIO, Cint), bio, C_NULL)
+    ccall(
+        (:BIO_set_data, libcrypto),
+        Cvoid,
+        (BIO, Cint),
+        bio,
+        C_NULL)
 
     return Cint(1)
 end
@@ -948,12 +1174,21 @@ function bio_stream_set_data(bio_stream::BIOStream)
         throw(Base.IOError("bio stream is closed or unusable", 0))
     end
 
-    ccall((:BIO_set_data, libcrypto), Cvoid, (BIO, Ptr{Cvoid}), bio_stream.bio, pointer_from_objref(bio_stream))
+    ccall(
+        (:BIO_set_data, libcrypto),
+        Cvoid,
+        (BIO, Ptr{Cvoid}),
+        bio_stream.bio,
+        pointer_from_objref(bio_stream))
     return nothing
 end
 
 function bio_stream_from_data(bio::BIO)::BIOStream
-    user_data::Ptr{Cvoid} = ccall((:BIO_get_data, libcrypto), Ptr{Cvoid}, (BIO,), bio)
+    user_data::Ptr{Cvoid} = ccall(
+        (:BIO_get_data, libcrypto),
+        Ptr{Cvoid},
+        (BIO,),
+        bio)
 
     bio_stream::BIOStream = unsafe_pointer_to_objref(user_data)
 
@@ -975,7 +1210,12 @@ mutable struct Asn1Time
     Asn1Time(date_time::DateTime) = Asn1Time(Int64(floor(datetime2unix(date_time))))
 
     function Asn1Time(unix_time::Int64)
-        asn1_time = ccall((:ASN1_TIME_set, libcrypto), Ptr{Cvoid}, (Ptr{Cvoid}, Int64), C_NULL, unix_time)
+        asn1_time = ccall(
+            (:ASN1_TIME_set, libcrypto),
+            Ptr{Cvoid},
+            (Ptr{Cvoid}, Int64),
+            C_NULL,
+            unix_time)
         if asn1_time == C_NULL
             throw(OpenSSLError())
         end
@@ -988,14 +1228,23 @@ mutable struct Asn1Time
 end
 
 function free(asn1_time::Asn1Time)
-    ccall((:ASN1_STRING_free, libcrypto), Cvoid, (Asn1Time,), asn1_time)
+    ccall(
+        (:ASN1_STRING_free, libcrypto),
+        Cvoid,
+        (Asn1Time,),
+        asn1_time)
 
     asn1_time.asn1_time = C_NULL
     return nothing
 end
 
 function Dates.adjust(asn1_time::Asn1Time, seconds::Second)
-    adj_asn1_time = ccall((:X509_gmtime_adj, libcrypto), Ptr{Cvoid}, (Asn1Time, Int64), asn1_time, seconds.value)
+    adj_asn1_time = ccall(
+        (:X509_gmtime_adj, libcrypto),
+        Ptr{Cvoid},
+        (Asn1Time, Int64),
+        asn1_time,
+        seconds.value)
     if adj_asn1_time == C_NULL
         throw(OpenSSLError())
     end
@@ -1024,7 +1273,10 @@ mutable struct X509Name
     end
 
     function X509Name()
-        x509_name = ccall((:X509_NAME_new, libcrypto), Ptr{Cvoid}, ())
+        x509_name = ccall(
+            (:X509_NAME_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if x509_name == C_NULL
             throw(OpenSSLError())
         end
@@ -1036,7 +1288,11 @@ mutable struct X509Name
 end
 
 function free(x509_name::X509Name)
-    ccall((:X509_NAME_free, libcrypto), Cvoid, (X509Name,), x509_name)
+    ccall(
+        (:X509_NAME_free, libcrypto),
+        Cvoid,
+        (X509Name,),
+        x509_name)
 
     x509_name.x509_name = C_NULL
     return nothing
@@ -1046,17 +1302,36 @@ end
     X509Name to string.
 """
 function Base.String(x509_name::X509Name)::String
-    name_ptr = ccall((:X509_NAME_oneline, libcrypto), Cstring, (X509Name, Ptr{UInt8}, Cint), x509_name, C_NULL, 0)
+    name_ptr = ccall(
+        (:X509_NAME_oneline, libcrypto),
+        Cstring,
+        (X509Name, Ptr{UInt8}, Cint),
+        x509_name,
+        C_NULL, 0)
 
     str = unsafe_string(name_ptr)
 
-    ccall((:CRYPTO_free, libcrypto), Cvoid, (Cstring,), name_ptr)
+    ccall(
+        (:CRYPTO_free, libcrypto),
+        Cvoid,
+        (Cstring,),
+        name_ptr)
 
     return str
 end
 
 function add_entry(x509_name::X509Name, field::String, value::String)
-    if ccall((:X509_NAME_add_entry_by_txt, libcrypto), Cint, (X509Name, Cstring, Cint, Cstring, Cint, Cint, Cint), x509_name, field, MBSTRING_ASC, value, -1, -1, 0) == 0
+    if ccall(
+        (:X509_NAME_add_entry_by_txt, libcrypto),
+        Cint,
+        (X509Name, Cstring, Cint, Cstring, Cint, Cint, Cint),
+        x509_name,
+        field,
+        MBSTRING_ASC,
+        value,
+        -1,
+        -1,
+        0) == 0
         throw(OpenSSLError())
     end
 
@@ -1070,7 +1345,10 @@ mutable struct X509Certificate
     x509::Ptr{Cvoid}
 
     function X509Certificate()
-        x509 = ccall((:X509_new, libcrypto), Ptr{Cvoid}, ())
+        x509 = ccall(
+            (:X509_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if x509 == C_NULL
             throw(OpenSSLError())
         end
@@ -1093,33 +1371,33 @@ mutable struct X509Certificate
         bio = BIO(BIOMethod_mem())
         unsafe_write(bio, pointer(in_string), length(in_string))
 
-        x509 = ccall((:PEM_read_bio_X509, libcrypto), Ptr{Cvoid}, (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), bio, C_NULL, C_NULL, C_NULL)
+        x509 = ccall(
+            (:PEM_read_bio_X509, libcrypto),
+            Ptr{Cvoid},
+            (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            bio,
+            C_NULL,
+            C_NULL,
+            C_NULL)
         if x509 == C_NULL
             throw(OpenSSLError())
         end
 
-        x509_cert = new(x509)
-        finalizer(free, x509_cert)
-
         free(bio)
-        return x509_cert
+
+        return X509Certificate(x509)
     end
 end
 
 function free(x509_cert::X509Certificate)
-    ccall((:X509_free, libcrypto), Cvoid, (X509Certificate,), x509_cert)
+    ccall(
+        (:X509_free, libcrypto),
+        Cvoid,
+        (X509Certificate,),
+        x509_cert)
 
     x509_cert.x509 = C_NULL
     return nothing
-end
-
-function get_public_key(x509_cert::X509Certificate)
-    evp_pkey = ccall((:X509_get_pubkey, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
-    if evp_pkey == C_NULL
-        throw(OpenSSLError())
-    end
-
-    return EvpPKey(evp_pkey)
 end
 
 function Base.write(io::IO, x509_cert::X509Certificate)
@@ -1128,33 +1406,56 @@ function Base.write(io::IO, x509_cert::X509Certificate)
     GC.@preserve bio_stream begin
         bio_stream_set_data(bio_stream)
 
-        if ccall((:PEM_write_bio_X509, libcrypto), Cint, (BIO, X509Certificate), bio_stream.bio, x509_cert) != 1
+        if ccall(
+            (:PEM_write_bio_X509, libcrypto),
+            Cint,
+            (BIO, X509Certificate),
+            bio_stream.bio,
+            x509_cert) != 1
             throw(OpenSSLError())
         end
     end
 end
 
 function sign_certificate(x509_cert::X509Certificate, evp_pkey::EvpPKey)
-    evp_md = ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, ())
+    evp_md = ccall(
+        (:EVP_sha256, libcrypto),
+        Ptr{Cvoid},
+        ())
 
-    if ccall((:X509_set_pubkey, libcrypto), Cint, (X509Certificate, EvpPKey), x509_cert, evp_pkey) != 1
+    if ccall(
+        (:X509_sign, libcrypto),
+        Cint,
+        (X509Certificate, EvpPKey, Ptr{Cvoid}),
+        x509_cert,
+        evp_pkey,
+        evp_md) == 0
         throw(OpenSSLError())
     end
 
-    if ccall((:X509_sign, libcrypto), Cint, (X509Certificate, EvpPKey, Ptr{Cvoid}), x509_cert, evp_pkey, evp_md) == 0
-        throw(OpenSSLError())
-    end
-
-    if ccall((:X509_verify, libcrypto), Cint, (X509Certificate, EvpPKey), x509_cert, evp_pkey) != 1
+    if ccall(
+        (:X509_verify, libcrypto),
+        Cint,
+        (X509Certificate, EvpPKey),
+        x509_cert,
+        evp_pkey) != 1
         throw(OpenSSLError())
     end
 end
 
 function get_subject_name(x509_cert::X509Certificate)::X509Name
-    x509_name = ccall((:X509_get_subject_name, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
+    x509_name = ccall(
+        (:X509_get_subject_name, libcrypto),
+        Ptr{Cvoid},
+        (X509Certificate,),
+        x509_cert)
 
     # Duplicate x509_name as it is an internal pointer and must not be freed.
-    x509_name = ccall((:X509_NAME_dup, libcrypto), Ptr{Cvoid}, (Ptr{Cvoid},), x509_name)
+    x509_name = ccall(
+        (:X509_NAME_dup, libcrypto),
+        Ptr{Cvoid},
+        (Ptr{Cvoid},),
+        x509_name)
 
     if x509_name == C_NULL
         throw(OpenSSLError())
@@ -1164,16 +1465,29 @@ function get_subject_name(x509_cert::X509Certificate)::X509Name
 end
 
 function set_subject_name(x509_cert::X509Certificate, x509_name::X509Name)
-    if ccall((:X509_set_subject_name, libcrypto), Cint, (X509Certificate, X509Name), x509_cert, x509_name) == 0
+    if ccall(
+        (:X509_set_subject_name, libcrypto),
+        Cint,
+        (X509Certificate, X509Name),
+        x509_cert,
+        x509_name) == 0
         throw(OpenSSLError())
     end
 end
 
 function get_issuer_name(x509_cert::X509Certificate)::X509Name
-    x509_name = ccall((:X509_get_issuer_name, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
+    x509_name = ccall(
+        (:X509_get_issuer_name, libcrypto),
+        Ptr{Cvoid},
+        (X509Certificate,),
+        x509_cert)
 
     # Duplicate x509_name as it is an internal pointer and must not be freed.
-    x509_name = ccall((:X509_NAME_dup, libcrypto), Ptr{Cvoid}, (Ptr{Cvoid},), x509_name)
+    x509_name = ccall(
+        (:X509_NAME_dup, libcrypto),
+        Ptr{Cvoid},
+        (Ptr{Cvoid},),
+        x509_name)
 
     if x509_name == C_NULL
         throw(OpenSSLError())
@@ -1183,13 +1497,21 @@ function get_issuer_name(x509_cert::X509Certificate)::X509Name
 end
 
 function set_issuer_name(x509_cert::X509Certificate, x509_name::X509Name)
-    if ccall((:X509_set_issuer_name, libcrypto), Cint, (X509Certificate, X509Name), x509_cert, x509_name) == 0
+    if ccall(
+        (:X509_set_issuer_name, libcrypto),
+        Cint, (X509Certificate, X509Name),
+        x509_cert,
+        x509_name) == 0
         throw(OpenSSLError())
     end
 end
 
 function get_time_not_before(x509_cert::X509Certificate)::Asn1Time
-    asn1_time = ccall((:X509_getm_notBefore, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
+    asn1_time = ccall(
+        (:X509_getm_notBefore, libcrypto),
+        Ptr{Cvoid},
+        (X509Certificate,),
+        x509_cert)
     if asn1_time == C_NULL
         throw(OpenSSLError())
     end
@@ -1199,13 +1521,22 @@ function get_time_not_before(x509_cert::X509Certificate)::Asn1Time
 end
 
 function set_time_not_before(x509_cert::X509Certificate, asn1_time::Asn1Time)
-    if ccall((:X509_set1_notBefore, libcrypto), Cint, (X509Certificate, Asn1Time), x509_cert, asn1_time) == 0
+    if ccall(
+        (:X509_set1_notBefore, libcrypto),
+        Cint,
+        (X509Certificate, Asn1Time),
+        x509_cert,
+        asn1_time) == 0
         throw(OpenSSLError())
     end
 end
 
 function get_time_not_after(x509_cert::X509Certificate)::Asn1Time
-    asn1_time = ccall((:X509_getm_notAfter, libcrypto), Ptr{Cvoid}, (X509Certificate,), x509_cert)
+    asn1_time = ccall(
+        (:X509_getm_notAfter, libcrypto),
+        Ptr{Cvoid},
+        (X509Certificate,),
+        x509_cert)
     if asn1_time == C_NULL
         throw(OpenSSLError())
     end
@@ -1215,37 +1546,321 @@ function get_time_not_after(x509_cert::X509Certificate)::Asn1Time
 end
 
 function set_time_not_after(x509_cert::X509Certificate, asn1_time::Asn1Time)
-    if ccall((:X509_set1_notAfter, libcrypto), Cint, (X509Certificate, Asn1Time), x509_cert, asn1_time) == 0
+    if ccall(
+        (:X509_set1_notAfter, libcrypto),
+        Cint,
+        (X509Certificate, Asn1Time),
+        x509_cert,
+        asn1_time) == 0
         throw(OpenSSLError())
     end
 end
 
-function Base.getproperty(x509_certificate::X509Certificate, name::Symbol)
-    if name === :subject_name
-        return get_subject_name(x509_certificate)
-    elseif name === :issuer_name
-        return get_issuer_name(x509_certificate)
-    elseif name === :time_not_before
-        return get_time_not_before(x509_certificate)
-    elseif name === :time_not_after
-        return get_time_not_after(x509_certificate)
-    else # fallback to getfield
-        return getfield(x509_certificate, name)
+function get_version(x509_cert::X509Certificate)::Int
+    version = ccall(
+        (:X509_get_version, libcrypto),
+        Clong,
+        (X509Certificate,),
+        x509_cert)
+
+    return Int(version)
+end
+
+function set_version(x509_cert::X509Certificate, version::Int)
+    if ccall(
+        (:X509_set_version, libcrypto),
+        Cint,
+        (X509Certificate, Cint),
+        x509_cert,
+        version) == 0
+        throw(OpenSSLError())
     end
 end
 
-function Base.setproperty!(x509_certificate::X509Certificate, name::Symbol, value)
-    if name === :subject_name
-        set_subject_name(x509_certificate, value)
-    elseif name === :issuer_name
-        set_issuer_name(x509_certificate, value)
-    elseif name === :time_not_before
-        set_time_not_before(x509_certificate, value)
-    elseif name === :time_not_after
-        set_time_not_after(x509_certificate, value)
-    else # fallback to setfield
-        setfield!(x509_certificate, name, value)
+function get_public_key(x509_cert::X509Certificate)::EvpPKey
+    evp_pkey = ccall(
+        (:X509_get_pubkey, libcrypto),
+        Ptr{Cvoid},
+        (X509Certificate,),
+        x509_cert)
+    if evp_pkey == C_NULL
+        throw(OpenSSLError())
     end
+
+    return EvpPKey(evp_pkey)
+end
+
+function set_public_key(x509_cert::X509Certificate, evp_pkey::EvpPKey)
+    if ccall(
+        (:X509_set_pubkey, libcrypto),
+        Cint,
+        (X509Certificate, EvpPKey),
+        x509_cert,
+        evp_pkey) == 0
+        throw(OpenSSLError())
+    end
+end
+
+function Base.getproperty(x509_cert::X509Certificate, name::Symbol)
+    if name === :subject_name
+        return get_subject_name(x509_cert)
+    elseif name === :issuer_name
+        return get_issuer_name(x509_cert)
+    elseif name === :time_not_before
+        return get_time_not_before(x509_cert)
+    elseif name === :time_not_after
+        return get_time_not_after(x509_cert)
+    elseif name === :version
+        return get_version(x509_cert)
+    elseif name === :public_key
+        return get_public_key(x509_cert)
+    else
+        # fallback to getfield
+        return getfield(x509_cert, name)
+    end
+end
+
+function Base.setproperty!(x509_cert::X509Certificate, name::Symbol, value)
+    if name === :subject_name
+        set_subject_name(x509_cert, value)
+    elseif name === :issuer_name
+        set_issuer_name(x509_cert, value)
+    elseif name === :time_not_before
+        set_time_not_before(x509_cert, value)
+    elseif name === :time_not_after
+        set_time_not_after(x509_cert, value)
+    elseif name === :version
+        set_version(x509_cert, value)
+    elseif name === :public_key
+        set_public_key(x509_cert, value)
+    else
+        # fallback to setfield
+        setfield!(x509_cert, name, value)
+    end
+end
+
+"""
+    X509 Request.
+"""
+mutable struct X509Request
+    x509_req::Ptr{Cvoid}
+
+    function X509Request()
+        x509_req = ccall(
+            (:X509_REQ_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if x509_req == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return X509Request(x509_req)
+    end
+
+    function X509Request(x509::Ptr{Cvoid})
+        x509_req = new(x509)
+        finalizer(free, x509_req)
+
+        return x509_req
+    end
+end
+
+function free(x509_req::X509Request)
+    ccall(
+        (:X509_REQ_free, libcrypto),
+        Cvoid,
+        (X509Request,),
+        x509_req)
+
+    x509_req.x509_req = C_NULL
+    return nothing
+end
+
+function Base.write(io::IO, x509_req::X509Request)
+    bio_stream = OpenSSL.BIOStream(io)
+
+    GC.@preserve bio_stream begin
+        bio_stream_set_data(bio_stream)
+
+        if ccall(
+            (:PEM_write_bio_X509_REQ, libcrypto),
+            Cint,
+            (BIO, X509Request),
+            bio_stream.bio,
+            x509_req) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function sign_request(x509_req::X509Request, evp_pkey::EvpPKey)
+    evp_md = ccall(
+        (:EVP_sha256, libcrypto),
+        Ptr{Cvoid},
+        ())
+
+    if ccall(
+        (:X509_REQ_set_pubkey, libcrypto),
+        Cint,
+        (X509Request, EvpPKey),
+        x509_req,
+        evp_pkey) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:X509_REQ_sign, libcrypto),
+        Cint, (X509Request, EvpPKey, Ptr{Cvoid}),
+        x509_req,
+        evp_pkey,
+        evp_md) == 0
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:X509_REQ_verify, libcrypto),
+        Cint, (X509Request, EvpPKey),
+        x509_req,
+        evp_pkey) != 1
+        throw(OpenSSLError())
+    end
+end
+
+function get_subject_name(x509_req::X509Request)::X509Name
+    x509_name = ccall(
+        (:X509_REQ_get_subject_name, libcrypto),
+        Ptr{Cvoid},
+        (X509Request,),
+        x509_req)
+
+    # Duplicate x509_name as it is an internal pointer and must not be freed.
+    x509_name = ccall(
+        (:X509_NAME_dup, libcrypto),
+        Ptr{Cvoid},
+        (Ptr{Cvoid},),
+        x509_name)
+
+    if x509_name == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return X509Name(x509_name)
+end
+
+function set_subject_name(x509_req::X509Request, x509_name::X509Name)
+    if ccall(
+        (:X509_REQ_set_subject_name, libcrypto),
+        Cint,
+        (X509Request, X509Name),
+        x509_req,
+        x509_name) == 0
+        throw(OpenSSLError())
+    end
+end
+
+function get_public_key(x509_req::X509Request)::EvpPKey
+    evp_pkey = ccall(
+        (:X509_REQ_get_pubkey, libcrypto),
+        Ptr{Cvoid},
+        (X509Request,),
+        x509_req)
+    if evp_pkey == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return EvpPKey(evp_pkey)
+end
+
+function set_public_key(x509_req::X509Request, evp_pkey::EvpPKey)
+    if ccall(
+        (:X509_REQ_set_pubkey, libcrypto),
+        Cint,
+        (X509Request, EvpPKey),
+        x509_req,
+        evp_pkey) == 0
+        throw(OpenSSLError())
+    end
+end
+
+function Base.getproperty(x509_req::X509Request, name::Symbol)
+    if name === :subject_name
+        return get_subject_name(x509_req)
+    elseif name === :public_key
+        return get_public_key(x509_req)
+    else
+        # fallback to getfield
+        return getfield(x509_req, name)
+    end
+end
+
+function Base.setproperty!(x509_req::X509Request, name::Symbol, value)
+    if name === :subject_name
+        set_subject_name(x509_req, value)
+    elseif name === :public_key
+        set_public_key(x509_req, value)
+    else
+        # fallback to setfield
+        setfield!(x509_req, name, value)
+    end
+end
+
+"""
+    PKCS12 - Public Key Cryptography Standard #12
+"""
+mutable struct P12Object
+    pkcs12::Ptr{Cvoid}
+
+    function P12Object()
+        pkcs12 = ccall(
+            (:PKCS12_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if pkcs12 == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return P12Object(pkcs12)
+    end
+
+    function P12Object(pkcs12::Ptr{Cvoid})
+        p12_object = new(pkcs12)
+        finalizer(free, p12_object)
+
+        return p12_object
+    end
+
+    function P12Object(evp_pkey::EvpPKey, x509_cert::X509Certificate)
+        pkcs12 = ccall(
+            (:PKCS12_create, libcrypto),
+            Ptr{Cvoid},
+            (Cstring, Cstring, EvpPKey, X509Certificate, Ptr{Cvoid}, Cint, Cint, Cint, Cint, Cint),
+            C_NULL,
+            C_NULL,
+            evp_pkey,
+            x509_cert,
+            C_NULL,
+            0,
+            0,
+            0,
+            0,
+            0)
+        if pkcs12 == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return P12Object(pkcs12)
+    end
+end
+
+function free(p12_object::P12Object)
+    ccall(
+        (:PKCS12_free, libcrypto),
+        Cvoid,
+        (P12Object,),
+        p12_object)
+
+    p12_object.pkcs12 = C_NULL
+    return nothing
 end
 
 """
@@ -1257,7 +1872,10 @@ mutable struct X509Store
     X509Store(x509_store::Ptr{Cvoid}) = new(x509_store)
 
     function X509Store()
-        x509_store = ccall((:X509_STORE_new, libcrypto), Ptr{Cvoid}, ())
+        x509_store = ccall(
+            (:X509_STORE_new, libcrypto),
+            Ptr{Cvoid},
+            ())
         if x509_store == C_NULL
             throw(OpenSSLError())
         end
@@ -1270,14 +1888,23 @@ mutable struct X509Store
 end
 
 function free(x509_store::X509Store)
-    ccall((:X509_STORE_free, libcrypto), Cvoid, (X509Store,), x509_store)
+    ccall(
+        (:X509_STORE_free, libcrypto),
+        Cvoid,
+        (X509Store,),
+        x509_store)
 
     x509_store.x509_store = C_NULL
     return nothing
 end
 
-function add_cert(x509_store::X509Store, x509_certificate::X509Certificate)
-    if ccall((:X509_STORE_add_cert, libcrypto), Cint, (X509Store, X509Certificate), x509_store, x509_certificate) != 1
+function add_cert(x509_store::X509Store, x509_cert::X509Certificate)
+    if ccall(
+        (:X509_STORE_add_cert, libcrypto),
+        Cint,
+        (X509Store, X509Certificate),
+        x509_store,
+        x509_cert) != 1
         throw(OpenSSLError())
     end
 end
@@ -1291,7 +1918,10 @@ mutable struct SSLMethod
 end
 
 function TLSv12ClientMethod()
-    ssl_method = ccall((:TLSv1_2_client_method, libssl), Ptr{Cvoid}, ())
+    ssl_method = ccall(
+        (:TLSv1_2_client_method, libssl),
+        Ptr{Cvoid},
+        ())
     if ssl_method == C_NULL
         throw(OpenSSLError())
     end
@@ -1300,7 +1930,10 @@ function TLSv12ClientMethod()
 end
 
 function TLSv12ServerMethod()
-    ssl_method = ccall((:TLSv1_2_server_method, libssl), Ptr{Cvoid}, ())
+    ssl_method = ccall(
+        (:TLSv1_2_server_method, libssl),
+        Ptr{Cvoid},
+        ())
     if ssl_method == C_NULL
         throw(OpenSSLError())
     end
@@ -1316,7 +1949,11 @@ mutable struct SSLContext
     ssl_ctx::Ptr{Cvoid}
 
     function SSLContext(ssl_method::SSLMethod)
-        ssl_ctx = ccall((:SSL_CTX_new, libssl), Ptr{Cvoid}, (SSLMethod,), ssl_method)
+        ssl_ctx = ccall(
+            (:SSL_CTX_new, libssl),
+            Ptr{Cvoid},
+            (SSLMethod,),
+            ssl_method)
         if ssl_ctx == C_NULL
             throw(OpenSSLError())
         end
@@ -1329,7 +1966,11 @@ mutable struct SSLContext
 end
 
 function free(ssl_context::SSLContext)
-    ccall((:SSL_CTX_free, libssl), Cvoid, (SSLContext,), ssl_context)
+    ccall(
+        (:SSL_CTX_free, libssl),
+        Cvoid,
+        (SSLContext,),
+        ssl_context)
 
     ssl_context.ssl_ctx = C_NULL
     return nothing
@@ -1339,14 +1980,25 @@ end
     Sets the (external) protocol behaviour of the SSL library.
 """
 function ssl_set_options(ssl_context::SSLContext, options::SSLOptions)::SSLOptions
-    return ccall((:SSL_CTX_set_options, libssl), SSLOptions, (SSLContext, SSLOptions), ssl_context, options)
+    return ccall(
+        (:SSL_CTX_set_options, libssl),
+        SSLOptions,
+        (SSLContext, SSLOptions),
+        ssl_context,
+        options)
 end
 
 """
     Configures TLS ALPN (Application-Layer Protocol Negotiation).
 """
 function ssl_set_alpn(ssl_context::SSLContext, protocol_list::String)
-    if ccall((:SSL_CTX_set_alpn_protos, libssl), Cint, (SSLContext, Ptr{UInt8}, UInt32), ssl_context, pointer(protocol_list), length(protocol_list)) != 0
+    if ccall(
+        (:SSL_CTX_set_alpn_protos, libssl),
+        Cint,
+        (SSLContext, Ptr{UInt8}, UInt32),
+        ssl_context,
+        pointer(protocol_list),
+        length(protocol_list)) != 0
         throw(OpenSSLError())
     end
 end
@@ -1358,19 +2010,34 @@ end
     Configures available TLSv1.3 ciphersuites.
 """
 function ssl_set_ciphersuites(ssl_context::SSLContext, cipher_suites::String)
-    if ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (SSLContext, Cstring), ssl_context, cipher_suites) != 1
+    if ccall(
+        (:SSL_CTX_set_ciphersuites, libssl),
+        Cint,
+        (SSLContext, Cstring),
+        ssl_context,
+        cipher_suites) != 1
         throw(OpenSSLError())
     end
 end
 
 function ssl_use_certificate(ssl_context::SSLContext, x509_cert::X509Certificate)
-    if ccall((:SSL_CTX_use_certificate, libssl), Cint, (SSLContext, X509Certificate), ssl_context, x509_cert) != 1
+    if ccall(
+        (:SSL_CTX_use_certificate, libssl),
+        Cint,
+        (SSLContext, X509Certificate),
+        ssl_context,
+        x509_cert) != 1
         throw(OpenSSLError())
     end
 end
 
 function ssl_use_private_key(ssl_context::SSLContext, evp_pkey::EvpPKey)
-    if ccall((:SSL_CTX_use_PrivateKey, libssl), Cint, (SSLContext, EvpPKey), ssl_context, evp_pkey) != 1
+    if ccall(
+        (:SSL_CTX_use_PrivateKey, libssl),
+        Cint,
+        (SSLContext, EvpPKey),
+        ssl_context,
+        evp_pkey) != 1
         throw(OpenSSLError())
     end
 end
@@ -1382,7 +2049,11 @@ mutable struct SSL
     ssl::Ptr{Cvoid}
 
     function SSL(ssl_context::SSLContext, read_bio::BIO, write_bio::BIO)::SSL
-        ssl = ccall((:SSL_new, libssl), Ptr{Cvoid}, (SSLContext,), ssl_context)
+        ssl = ccall(
+            (:SSL_new, libssl),
+            Ptr{Cvoid},
+            (SSLContext,),
+            ssl_context)
         if ssl == C_NULL
             throw(OpenSSLError())
         end
@@ -1390,34 +2061,62 @@ mutable struct SSL
         ssl = new(ssl)
         finalizer(free, ssl)
 
-        ccall((:SSL_set_bio, libssl), Cvoid, (SSL, BIO, BIO), ssl, read_bio, write_bio)
+        ccall(
+            (:SSL_set_bio, libssl),
+            Cvoid,
+            (SSL, BIO, BIO),
+            ssl,
+            read_bio,
+            write_bio)
 
         return ssl
     end
 end
 
 function free(ssl::SSL)
-    ccall((:SSL_free, libssl), Cvoid, (SSL,), ssl)
+    ccall(
+        (:SSL_free, libssl),
+        Cvoid,
+        (SSL,),
+        ssl)
 
     ssl.ssl = C_NULL
     return nothing
 end
 
 function ssl_connect(ssl::SSL)
-    if ccall((:SSL_connect, libssl), Cint, (SSL,), ssl) != 1
+    if ccall(
+        (:SSL_connect, libssl),
+        Cint,
+        (SSL,),
+        ssl) != 1
         throw(OpenSSLError())
     end
 
-    ccall((:SSL_set_read_ahead, libssl), Cvoid, (SSL, Cint), ssl, Int32(1))
+    ccall(
+        (:SSL_set_read_ahead, libssl),
+        Cvoid,
+        (SSL, Cint),
+        ssl,
+        Int32(1))
     return nothing
 end
 
 function ssl_accept(ssl::SSL)
-    if ccall((:SSL_accept, libssl), Cint, (SSL,), ssl) != 1
+    if ccall(
+        (:SSL_accept, libssl),
+        Cint,
+        (SSL,),
+        ssl) != 1
         throw(OpenSSLError())
     end
 
-    ccall((:SSL_set_read_ahead, libssl), Cvoid, (SSL, Cint), ssl, Int32(1))
+    ccall(
+        (:SSL_set_read_ahead, libssl),
+        Cvoid,
+        (SSL, Cint),
+        ssl,
+        Int32(1))
     return nothing
 end
 
@@ -1425,16 +2124,28 @@ end
     Shut down a TLS/SSL connection.
 """
 function ssl_disconnect(ssl::SSL)
-    ccall((:SSL_shutdown, libssl), Cint, (SSL,), ssl)
+    ccall(
+        (:SSL_shutdown, libssl),
+        Cint,
+        (SSL,),
+        ssl)
 
     # Clear ssl_error queue.
-    ccall((:ERR_clear_error, libcrypto), Cvoid, ())
+    ccall(
+        (:ERR_clear_error, libcrypto),
+        Cvoid,
+        ())
 
     return nothing
 end
 
 function get_error(ssl::SSL, ret::Cint)::Cint
-    return ccall((:SSL_get_error, libssl), Cint, (SSL, Cint), ssl, ret)
+    return ccall(
+        (:SSL_get_error, libssl),
+        Cint,
+        (SSL, Cint),
+        ssl,
+        ret)
 end
 
 """
@@ -1480,12 +2191,22 @@ function force_read_buffer(ssl_stream::SSLStream)
         bio_stream_set_data(bio_read_stream)
         bio_stream_set_data(bio_write_stream)
 
-        has_pending = ccall((:SSL_has_pending, libssl), Cint, (SSL,), ssl_stream.ssl)
+        has_pending = ccall(
+            (:SSL_has_pending, libssl),
+            Cint,
+            (SSL,),
+            ssl_stream.ssl)
         update_tls_error_state()
 
         # If there is no data in the buffer, peek and force the first read.
         in_buffer = Vector{UInt8}(undef, 1)
-        read_count = ccall((:SSL_peek, libssl), Cint, (SSL, Ptr{Int8}, Cint), ssl_stream.ssl, pointer(in_buffer), length(in_buffer))
+        read_count = ccall(
+            (:SSL_peek, libssl),
+            Cint,
+            (SSL, Ptr{Int8}, Cint),
+            ssl_stream.ssl,
+            pointer(in_buffer),
+            length(in_buffer))
         if read_count <= 0
             throw(OpenSSLError())
         end
@@ -1502,7 +2223,13 @@ function Base.unsafe_write(ssl_stream::SSLStream, in_buffer::Ptr{UInt8}, in_leng
         bio_stream_set_data(bio_read_stream)
         bio_stream_set_data(bio_write_stream)
 
-        write_count = ccall((:SSL_write, libssl), Cint, (SSL, Ptr{Cvoid}, Cint), ssl_stream.ssl, in_buffer, in_length)
+        write_count = ccall(
+            (:SSL_write, libssl),
+            Cint,
+            (SSL, Ptr{Cvoid}, Cint),
+            ssl_stream.ssl,
+            in_buffer,
+            in_length)
         if write_count <= 0
             throw(OpenSSLError())
         end
@@ -1554,17 +2281,31 @@ function Base.read(ssl_stream::SSLStream)::Vector{UInt8}
             # Force first read, that will update the pending bytes.
             force_read_buffer(ssl_stream)
 
-            has_pending = ccall((:SSL_has_pending, libssl), Cint, (SSL,), ssl_stream.ssl)
+            has_pending = ccall(
+                (:SSL_has_pending, libssl),
+                Cint,
+                (SSL,),
+                ssl_stream.ssl)
             update_tls_error_state()
 
-            pending_count = ccall((:SSL_pending, libssl), Cint, (SSL,), ssl_stream.ssl)
+            pending_count = ccall(
+                (:SSL_pending, libssl),
+                Cint,
+                (SSL,),
+                ssl_stream.ssl)
             update_tls_error_state()
 
             # Allocate read buffer and copy the data to it.
             read_buffer = Vector{UInt8}(undef, pending_count)
 
             if pending_count != 0
-                read_count = ccall((:SSL_read, libssl), Cint, (SSL, Ptr{Int8}, Cint), ssl_stream.ssl, pointer(read_buffer), pending_count)
+                read_count = ccall(
+                    (:SSL_read, libssl),
+                    Cint,
+                    (SSL, Ptr{Int8}, Cint),
+                    ssl_stream.ssl,
+                    pointer(read_buffer),
+                    pending_count)
                 if read_count <= 0
                     throw(OpenSSLError())
                 end
@@ -1587,10 +2328,18 @@ function Base.bytesavailable(ssl_stream::SSLStream)::Cint
         bio_stream_set_data(bio_read_stream)
         bio_stream_set_data(bio_write_stream)
 
-        has_pending = ccall((:SSL_has_pending, libssl), Cint, (SSL,), ssl_stream.ssl)
+        has_pending = ccall(
+            (:SSL_has_pending, libssl),
+            Cint,
+            (SSL,),
+            ssl_stream.ssl)
         update_tls_error_state()
 
-        pending_count = ccall((:SSL_pending, libssl), Cint, (SSL,), ssl_stream.ssl)
+        pending_count = ccall(
+            (:SSL_pending, libssl),
+            Cint,
+            (SSL,),
+            ssl_stream.ssl)
         update_tls_error_state()
 
         return pending_count
@@ -1607,7 +2356,11 @@ function Base.eof(ssl_stream::SSLStream)::Bool
 
         force_read_buffer(ssl_stream)
 
-        has_pending = ccall((:SSL_has_pending, libssl), Cint, (SSL,), ssl_stream.ssl)
+        has_pending = ccall(
+            (:SSL_has_pending, libssl),
+            Cint,
+            (SSL,),
+            ssl_stream.ssl)
         update_tls_error_state()
 
         return has_pending == 0
@@ -1637,7 +2390,11 @@ end
     Gets the X509 certificate of the peer.
 """
 function get_peer_certificate(ssl_stream::SSLStream)::Option{X509Certificate}
-    x509 = ccall((:SSL_get_peer_certificate, libssl), Ptr{Cvoid}, (SSL,), ssl_stream.ssl)
+    x509 = ccall(
+        (:SSL_get_peer_certificate, libssl),
+        Ptr{Cvoid},
+        (SSL,),
+        ssl_stream.ssl)
     if x509 != C_NULL
         return X509Certificate(x509)
     else
@@ -1653,12 +2410,27 @@ mutable struct OpenSSLInit
     function OpenSSLInit()
         println("=> [OpenSSL Init]")
 
-        opts = UInt64(OPENSSL_INIT_LOAD_CRYPTO_STRINGS | OPENSSL_INIT_ADD_ALL_CIPHERS | OPENSSL_INIT_ADD_ALL_DIGESTS | OPENSSL_INIT_ASYNC)
-        if ccall((:OPENSSL_init_crypto, libcrypto), UInt64, (Cint, Ptr{Cvoid}), opts, C_NULL) != 1
+        opts = UInt64(
+            OPENSSL_INIT_LOAD_CRYPTO_STRINGS |
+            OPENSSL_INIT_ADD_ALL_CIPHERS |
+            OPENSSL_INIT_ADD_ALL_DIGESTS |
+            OPENSSL_INIT_ASYNC)
+
+        if ccall(
+            (:OPENSSL_init_crypto, libcrypto),
+            UInt64,
+            (Cint, Ptr{Cvoid}),
+            opts,
+            C_NULL) != 1
             throw(OpenSSLError())
         end
 
-        if ccall((:OPENSSL_init_ssl, libssl), Cint, (Cint, Ptr{Cvoid}), Cint(OPENSSL_INIT_LOAD_SSL_STRINGS), C_NULL) != 1
+        if ccall(
+            (:OPENSSL_init_ssl, libssl),
+            Cint,
+            (Cint, Ptr{Cvoid}),
+            Cint(OPENSSL_INIT_LOAD_SSL_STRINGS),
+            C_NULL) != 1
             throw(OpenSSLError())
         end
 
@@ -1685,7 +2457,13 @@ struct BIOStreamCallbacks
         on_bio_puts_ptr = @cfunction on_bio_stream_puts Cint (BIO, Ptr{Cchar})
         on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Int64 (BIO, BIOCtrl, Int64, Ptr{Cvoid})
 
-        return new(on_bio_create_ptr, on_bio_destroy_ptr, on_bio_read_ptr, on_bio_write_ptr, on_bio_puts_ptr, on_bio_ctrl_ptr)
+        return new(
+            on_bio_create_ptr,
+            on_bio_destroy_ptr,
+            on_bio_read_ptr,
+            on_bio_write_ptr,
+            on_bio_puts_ptr,
+            on_bio_ctrl_ptr)
     end
 end
 
@@ -1694,7 +2472,12 @@ function Base.String(big_num::BigNum)
 
     write(bio, "0x")
 
-    if ccall((:BN_print, libcrypto), Cint, (BIO, BigNum), bio, big_num) == 0
+    if ccall(
+        (:BN_print, libcrypto),
+        Cint,
+        (BIO, BigNum),
+        bio,
+        big_num) == 0
         throw(OpenSSLError())
     end
 
@@ -1712,7 +2495,12 @@ function Base.String(asn1_time::Asn1Time)
 
     bio = BIO(BIOMethod_mem())
 
-    if ccall((:ASN1_TIME_print, libcrypto), Cint, (BIO, Asn1Time), bio, asn1_time) == 0
+    if ccall(
+        (:ASN1_TIME_print, libcrypto),
+        Cint,
+        (BIO, Asn1Time),
+        bio,
+        asn1_time) == 0
         throw(OpenSSLError())
     end
 
@@ -1726,11 +2514,21 @@ end
 function Base.String(x509_cert::X509Certificate)
     io = IOBuffer()
 
-    println(io, """
-        subject_name: $(x509_cert.subject_name)
-        issuer_name: $(x509_cert.issuer_name)
-        time_not_before: $(x509_cert.time_not_before)
-        time_not_after: $(x509_cert.time_not_after)""")
+    println(io,
+        """
+subject_name: $(x509_cert.subject_name)
+issuer_name: $(x509_cert.issuer_name)
+time_not_before: $(x509_cert.time_not_before)
+time_not_after: $(x509_cert.time_not_after)""")
+
+    seek(io, 0)
+    return String(read(io))
+end
+
+function Base.String(x509_cert::X509Request)
+    io = IOBuffer()
+
+    println(io, """subject_name: $(x509_cert.subject_name)""")
 
     seek(io, 0)
     return String(read(io))
@@ -1741,9 +2539,33 @@ function Base.String(evp_pkey::EvpPKey)
 
     bio = BIO(BIOMethod_mem())
 
-    _ = ccall((:EVP_PKEY_print_public, libcrypto), Cint, (BIO, EvpPKey, Cint, Ptr{Cvoid}), bio, evp_pkey, 0, C_NULL)
-    _ = ccall((:EVP_PKEY_print_private, libcrypto), Cint, (BIO, EvpPKey, Cint, Ptr{Cvoid}), bio, evp_pkey, 0, C_NULL)
-    _ = ccall((:EVP_PKEY_print_params, libcrypto), Cint, (BIO, EvpPKey, Cint, Ptr{Cvoid}), bio, evp_pkey, 0, C_NULL)
+    _ = ccall(
+        (:EVP_PKEY_print_public, libcrypto),
+        Cint,
+        (BIO, EvpPKey, Cint, Ptr{Cvoid}),
+        bio,
+        evp_pkey,
+        0,
+        C_NULL)
+
+    _ = ccall(
+        (:EVP_PKEY_print_private, libcrypto),
+        Cint,
+        (BIO, EvpPKey, Cint, Ptr{Cvoid}),
+        bio,
+        evp_pkey,
+        0,
+        C_NULL)
+
+    _ = ccall(
+        (:EVP_PKEY_print_params, libcrypto),
+        Cint,
+        (BIO, EvpPKey, Cint, Ptr{Cvoid}),
+        bio,
+        evp_pkey,
+        0,
+        C_NULL)
+
     update_tls_error_state()
 
     result = String(bio_get_mem_data(bio))
@@ -1760,6 +2582,8 @@ Base.show(io::IO, asn1_time::Asn1Time) = write(io, String(asn1_time))
 Base.show(io::IO, x509_name::X509Name) = write(io, String(x509_name))
 
 Base.show(io::IO, x509_cert::X509Certificate) = write(io, String(x509_cert))
+
+Base.show(io::IO, x509_req::X509Request) = write(io, String(x509_req))
 
 Base.show(io::IO, evp_pkey::EvpPKey) = write(io, String(evp_pkey))
 
@@ -1779,13 +2603,21 @@ function get_error()::String
         delete!(task_local_storage(), :openssl_err)
 
         # Clear the error queue, print the error messages to the memory BIO.
-        ccall((:ERR_print_errors, libcrypto), Cvoid, (BIO,), bio)
+        ccall(
+            (:ERR_print_errors, libcrypto),
+            Cvoid,
+            (BIO,),
+            bio)
 
         bio_msg = String(bio_get_mem_data(bio))
         error_msg = "$(tls_msg) : $(bio_msg)"
     else
         # Clear the error queue, print the error messages to the memory BIO.
-        ccall((:ERR_print_errors, libcrypto), Cvoid, (BIO,), bio)
+        ccall(
+            (:ERR_print_errors, libcrypto),
+            Cvoid,
+            (BIO,),
+            bio)
 
         error_msg = String(bio_get_mem_data(bio))
     end
@@ -1793,7 +2625,10 @@ function get_error()::String
     # Read the formatted error messages from the memory BIO.
 
     # Ensure the queue is clear (if ERR_print_errors fails).
-    ccall((:ERR_clear_error, libcrypto), Cvoid, ())
+    ccall(
+        (:ERR_clear_error, libcrypto),
+        Cvoid,
+        ())
 
     # Free bio.
     free(bio)
@@ -1806,7 +2641,10 @@ end
 """
 function update_tls_error_state()
     # Check if there are errors in OpenSSL error queue.
-    if ccall((:ERR_peek_error, libcrypto), Culong, ()) != 0
+    if ccall(
+        (:ERR_peek_error, libcrypto),
+        Culong,
+        ()) != 0
         # Clear OpenSSL queue and store the errors in the Task TLS.
         error_str = get_error()
         task_local_storage(:openssl_err, error_str)

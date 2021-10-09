@@ -46,6 +46,9 @@ end
 
     n1 = BigNum(0x11)
     @test String(n1 % n2) == "0x1"
+
+    n1 = BigNum(0x3)
+    @test String(n1 * n2) == "0xC"
 end
 
 @testset "Asn1Time" begin
@@ -187,22 +190,25 @@ end
 
 @testset "Hash" begin
     res = digest(EVPMD5(), IOBuffer("The quick brown fox jumps over the lazy dog"))
-    @test res == UInt8[0x9e, 0x10, 0x7d, 0x9d, 0x37, 0x2b, 0xb6, 0x82, 0x6b, 0xd8, 0x1d, 0x35, 0x42, 0xa4, 0x19, 0xd6,]
+    @test res == UInt8[0x9e, 0x10, 0x7d, 0x9d, 0x37, 0x2b, 0xb6, 0x82, 0x6b, 0xd8, 0x1d, 0x35, 0x42, 0xa4, 0x19, 0xd6]
 end
 
-@testset "SelfSigned" begin
-    evp_pkey = EvpPKey(rsa_generate_key())
+@testset "SelfSignedCertificate" begin
     x509_certificate = X509Certificate()
+
+    evp_pkey = EvpPKey(rsa_generate_key())
+    x509_certificate.public_key = evp_pkey
+
     x509_name = X509Name()
     add_entry(x509_name, "C", "US")
     add_entry(x509_name, "ST", "Isles of Redmond")
     add_entry(x509_name, "CN", "www.redmond.com")
 
-    adjust(x509_certificate.time_not_before, Second(0))
-    adjust(x509_certificate.time_not_after, Year(1))
-
     x509_certificate.subject_name = x509_name
     x509_certificate.issuer_name = x509_name
+
+    adjust(x509_certificate.time_not_before, Second(0))
+    adjust(x509_certificate.time_not_after, Year(1))
 
     sign_certificate(x509_certificate, evp_pkey)
 
@@ -217,10 +223,87 @@ end
     x509_string = String(x509_certificate)
     x509_string2 = String(x509_certificate2)
 
-    public_key = get_public_key(x509_certificate)
+    public_key = x509_certificate.public_key
     @show public_key
 
     @test x509_string == x509_string2
+
+    p12 = P12Object(evp_pkey, x509_certificate)
+    @show p12
+end
+
+#https://mariadb.com/docs/security/encryption/in-transit/create-self-signed-certificates-keys-openssl/
+#https://chromium.googlesource.com/chromiumos/platform/entd/+/fb446ee0213243fc4ca1ade16bb56ecde8935ea5/pkcs11.cc
+@testset "SignCertCertificate" begin
+    # Create a root certificate.
+    x509_certificate = X509Certificate()
+
+    evp_pkey_ca = EvpPKey(rsa_generate_key())
+    x509_certificate.public_key = evp_pkey_ca
+
+    x509_name = X509Name()
+    add_entry(x509_name, "C", "US")
+    add_entry(x509_name, "ST", "Isles of Redmond")
+    add_entry(x509_name, "CN", "www.redmond.com")
+
+    x509_certificate.subject_name = x509_name
+    x509_certificate.issuer_name = x509_name
+
+    adjust(x509_certificate.time_not_before, Second(0))
+    adjust(x509_certificate.time_not_after, Year(1))
+
+    sign_certificate(x509_certificate, evp_pkey_ca)
+
+    root_certificate = x509_certificate
+
+    #pk = OpenSSL.get_private_key(root_certificate)
+    #@show pk
+
+    # Create a certificate sign request.
+    x509_request = X509Request()
+
+    evp_pkey = EvpPKey(rsa_generate_key())
+
+    x509_name = X509Name()
+    add_entry(x509_name, "C", "US")
+    add_entry(x509_name, "ST", "Isles of Redmond")
+    add_entry(x509_name, "CN", "www.redmond.com")
+
+    x509_request.subject_name = x509_name
+
+    sign_request(x509_request, evp_pkey)
+
+    @show x509_request.public_key
+
+    @show x509_request
+
+    # Create a certificate.
+    x509_certificate = X509Certificate()
+    x509_certificate.version = 2
+
+    # Set issuer and subject name of the cert from the req and CA.
+    x509_certificate.subject_name = x509_request.subject_name
+    x509_certificate.issuer_name = root_certificate.subject_name
+
+    # Set public key
+    x509_certificate.public_key = x509_request.public_key
+
+    adjust(x509_certificate.time_not_before, Second(0))
+    adjust(x509_certificate.time_not_after, Year(1))
+
+    sign_certificate(x509_certificate, evp_pkey_ca)
+    @show x509_certificate
+    # TODO
+    # EVP_PKEY CApkey 
+    # sign()
+
+    io = IOBuffer()
+    write(io, x509_certificate)
+    seek(io, 0)
+    @show String(read(io))
+
+    @show x509_certificate
+    @show x509_certificate.version
 end
 
 @testset "ErrorTaskTLS" begin
@@ -231,7 +314,8 @@ end
 
     # Make direct invalid call to OpenSSL
     invalid_cipher_suites = "TLS_AES_356_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"
-    result = ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (OpenSSL.SSLContext, Cstring), ssl_ctx, invalid_cipher_suites)
+    result = ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (OpenSSL.SSLContext, Cstring), ssl_ctx,
+        invalid_cipher_suites)
 
     # Verify the error message.
     err_msg = OpenSSL.get_error()
@@ -242,7 +326,8 @@ end
     @test err_msg == ""
 
     # Make invalid OpenSSL (with fail and OpenSSL updates internal error queue).
-    result = ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (OpenSSL.SSLContext, Cstring), ssl_ctx, invalid_cipher_suites)
+    result = ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (OpenSSL.SSLContext, Cstring), ssl_ctx,
+        invalid_cipher_suites)
     # Copy and clear OpenSSL error queue to task TLS.
     OpenSSL.update_tls_error_state()
     # OpenSSL queue should be empty right now.
@@ -256,8 +341,11 @@ end
 end
 
 function test_server()
-    evp_pkey = EvpPKey(rsa_generate_key())
     x509_certificate = X509Certificate()
+
+    evp_pkey = EvpPKey(rsa_generate_key())
+    x509_certificate.public_key = evp_pkey
+
     x509_name = X509Name()
     add_entry(x509_name, "C", "US")
     add_entry(x509_name, "ST", "Isles of Redmond")
@@ -277,7 +365,8 @@ function test_server()
     ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ServerMethod())
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
     @show result
-    result = OpenSSL.ssl_set_ciphersuites(ssl_ctx, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
+    result = OpenSSL.ssl_set_ciphersuites(ssl_ctx,
+        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
     @show result
 
     result = OpenSSL.ssl_use_certificate(ssl_ctx, x509_certificate)
