@@ -6,6 +6,8 @@ using OpenSSL_jll
 using Sockets
 
 """
+    [ ] Encryption, decryption
+    [ ] X509 extension
     [x] Free BIO
     [x] Free BIOMethod
     [x] Free on BIOStream
@@ -19,13 +21,15 @@ Error handling:
     we clear the OpenSSL error queue, and store the error messages in Julia task TLS.
 """
 
-export TLSv12ClientMethod, TLSv12ServerMethod, SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, X509Certificate,
-    X509Request, P12Object, X509Store, EVPCipherContext,
-    EVPBlowFishCBC, EVPBlowFishECB, EVPBlowFishCFB, EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB,
-    EVPAES128OFB, EVPDigestContext, digest_init, digest_update,
-    digest_final, digest, EVPMDNull, EVPMD2, EVPMD5, EVPSHA1, rsa_generate_key, add_entry, sign_certificate,
-    sign_request, adjust, add_cert, eof, isreadable, iswritable,
-    bytesavailable, read, unsafe_write, connect, get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN
+export TLSv12ClientMethod, TLSv12ServerMethod,
+    SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name,
+    X509Certificate, X509Request, X509Store, X509Extension, StackOf, P12Object,
+    EVPCipherContext, EVPEncNull, EVPBlowFishCBC, EVPBlowFishECB, EVPBlowFishCFB,
+    EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, encrypt_init, cipher,
+    EVPDigestContext, decrypt_init, digest_init, digest_update, digest_final, digest,
+    EVPMDNull, EVPMD2, EVPMD5, EVPSHA1, EVPDSS1, random_bytes, rsa_generate_key, add_entry,
+    sign_certificate, sign_request, adjust, add_cert, eof, isreadable, iswritable, bytesavailable, read,
+    unsafe_write, connect, get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
 const Option{T} = Union{Nothing,T} where {T}
 
@@ -333,6 +337,80 @@ const EVP_MAX_BLOCK_LENGTH = 32
 # define RSA_3   0x3L
 # define RSA_F4  0x10001L
 
+@enum(EvpPKeyType::Int32,
+    # define NID_undef 0
+    EVP_PKEY_NONE = 0,
+    # define NID_rsaEncryption 6
+    EVP_PKEY_RSA = 6,
+    # define NID_rsa 19
+    EVP_PKEY_RSA2 = 19,
+    # define NID_rsassaPss 912
+    EVP_PKEY_RSA_PSS = 912,
+    # define NID_dsa 116
+    EVP_PKEY_DSA = 116,
+    # define NID_dsa_2 67
+    EVP_PKEY_DSA1 = 67,
+    # define NID_dsaWithSHA 66
+    EVP_PKEY_DSA2 = 66,
+    # define NID_dsaWithSHA1 113
+    EVP_PKEY_DSA3 = 113,
+    # define NID_dsaWithSHA1_2 70
+    EVP_PKEY_DSA4 = 70,
+    # define NID_dhKeyAgreement 28
+    EVP_PKEY_DH = 28,
+    # define NID_dhpublicnumber 920
+    EVP_PKEY_DHX = 920,
+    # define NID_X9_62_id_ecPublicKey 408
+    EVP_PKEY_EC = 408,
+    # define NID_sm2 1172
+    EVP_PKEY_SM2 = 1172,
+    # define NID_hmac 855
+    EVP_PKEY_HMAC = 855,
+    # define NID_cmac 894
+    EVP_PKEY_CMAC = 894,
+    # define NID_id_scrypt 973
+    EVP_PKEY_SCRYPT = 973,
+    # define NID_tls1_prf 1021
+    EVP_PKEY_TLS1_PRF = 1021,
+    # define NID_hkdf 1036
+    EVP_PKEY_HKDF = 1036,
+    # define NID_poly1305 1061
+    EVP_PKEY_POLY1305 = 1061,
+    # define NID_siphash 1062
+    EVP_PKEY_SIPHASH = 1062,
+    # define NID_X25519 1034
+    EVP_PKEY_X25519 = 1034,
+    # define NID_ED25519 1087
+    EVP_PKEY_ED25519 = 1087,
+    # define NID_X448 1035
+    EVP_PKEY_X448 = 1035,
+    # define NID_ED448 1088
+    EVP_PKEY_ED448 = 1088)
+
+const RSA_F4 = 0x10001
+
+@enum(OpenSSLVersion::Int32,
+    # The text variant of the version number and the release date.
+    OPENSSL_VERSION = 0,
+    # The compiler flags set for the compilation process.
+    OPENSSL_CFLAGS = 1,
+    # The date of the build process.
+    OPENSSL_BUILT_ON = 2,
+    # The "Configure" target of the library build.
+    OPENSSL_PLATFORM = 3,
+    # The "OPENSSLDIR" setting of the library build.
+    OPENSSL_DIR = 4,
+    # The "ENGINESDIR" setting of the library build.
+    OPENSSL_ENGINES_DIR = 5,
+    # The short version identifier string.
+    OPENSSL_VERSION_STRING = 6,
+    # The longer version identifier string
+    OPENSSL_FULL_VERSION_STRING = 7,
+    # The MODULESDIR setting of the library.
+    OPENSSL_MODULES_DIR = 8,
+    # The current OpenSSL cpu settings
+    OPENSSL_CPU_INFO = 9)
+
 """
     OpenSSL error.
 """
@@ -340,6 +418,29 @@ struct OpenSSLError <: Exception
     msg::AbstractString
 
     OpenSSLError() = new(get_error())
+end
+
+"""
+    Random bytes.
+"""
+function random_bytes!(rand_data::Vector{UInt8})
+    GC.@preserve rand_data begin
+        if ccall(
+            (:RAND_bytes, libcrypto),
+            Cint,
+            (Ptr{UInt8}, Cint),
+            pointer(rand_data),
+            length(rand_data)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function random_bytes(length)
+    rand_data = Vector{UInt8}(undef, length)
+    random_bytes!(rand_data)
+
+    return rand_data
 end
 
 """
@@ -406,7 +507,7 @@ mutable struct BigNum
             (:BN_set_word, libcrypto),
             Cint,
             (BigNum, UInt64),
-            big_num, value) == 0
+            big_num, value) != 1
             throw(OpenSSLError())
         end
 
@@ -434,7 +535,7 @@ function Base.:+(a::BigNum, b::BigNum)::BigNum
         (BigNum, BigNum, BigNum),
         r,
         a,
-        b) == 0
+        b) != 1
         throw(OpenSSLError())
     end
 
@@ -450,7 +551,7 @@ function Base.:-(a::BigNum, b::BigNum)::BigNum
         (BigNum, BigNum, BigNum),
         r,
         a,
-        b) == 0
+        b) != 1
         throw(OpenSSLError())
     end
 
@@ -469,7 +570,7 @@ function Base.:*(a::BigNum, b::BigNum)::BigNum
         r,
         a,
         b,
-        c) == 0
+        c) != 1
         throw(OpenSSLError())
     end
 
@@ -492,7 +593,7 @@ function Base.:/(a::BigNum, b::BigNum)::BigNum
         rm,
         a,
         b,
-        c) == 0
+        c) != 1
         throw(OpenSSLError())
     end
 
@@ -516,7 +617,7 @@ function Base.:%(a::BigNum, b::BigNum)::BigNum
         rm,
         a,
         b,
-        c) == 0
+        c) != 1
         throw(OpenSSLError())
     end
 
@@ -560,10 +661,6 @@ function free(rsa::RSA)
     rsa.rsa = C_NULL
     return nothing
 end
-
-const EVP_PKEY_RSA = 6 #NID_rsaEncryption
-#const EVP_PKEY_DSA = 6
-const RSA_F4 = 0x10001
 
 """
     Generate RSA key pair.
@@ -619,7 +716,7 @@ mutable struct EvpPKey
             Cint, (EvpPKey, Cint, RSA),
             evp_pkey,
             EVP_PKEY_RSA,
-            rsa) == 0
+            rsa) != 1
             throw(OpenSSLError())
         end
 
@@ -639,12 +736,33 @@ function free(evp_pkey::EvpPKey)
     return nothing
 end
 
+function get_key_type(evp_pkey::EvpPKey)::EvpPKeyType
+    pkey_type = ccall(
+        (:EVP_PKEY_base_id, libcrypto),
+        EvpPKeyType,
+        (EvpPKey,),
+        evp_pkey)
+
+    return pkey_type
+end
+
+function Base.getproperty(evp_pkey::EvpPKey, name::Symbol)
+    if name === :key_type
+        return get_key_type(evp_pkey)
+    else
+        # fallback to getfield
+        return getfield(evp_pkey, name)
+    end
+end
+
 """
     EVP_CIPHER.
 """
 mutable struct EVPCipher
     evp_cipher::Ptr{Cvoid}
 end
+
+EVPEncNull()::EVPCipher = EVPCipher(ccall((:EVP_enc_null, libcrypto), Ptr{Cvoid}, ()))
 
 """
     Basic Block Cipher Modes:
@@ -684,6 +802,13 @@ EVPEncNull()::EVPCipher = EVPCipher(ccall((:EVP_enc_null, libcrypto), Ptr{Cvoid}
 mutable struct EVPCipherContext
     evp_cipher_ctx::Ptr{Cvoid}
 
+    function EVPCipherContext(evp_cipher_ctx::Ptr{Cvoid})
+        evp_cipher_ctx = new(evp_cipher_ctx)
+        finalizer(free, evp_cipher_ctx)
+
+        return evp_cipher_ctx
+    end
+
     function EVPCipherContext()
         evp_cipher_ctx = ccall(
             (:EVP_CIPHER_CTX_new, libcrypto),
@@ -693,10 +818,7 @@ mutable struct EVPCipherContext
             throw(OpenSSLError())
         end
 
-        evp_cipher_ctx = new(evp_cipher_ctx)
-        finalizer(free, evp_cipher_ctx)
-
-        return evp_cipher_ctx
+        return EVPCipherContext(evp_cipher_ctx)
     end
 end
 
@@ -709,6 +831,153 @@ function free(evp_cipher_ctx::EVPCipherContext)
 
     evp_cipher_ctx.evp_cipher_ctx = C_NULL
     return nothing
+end
+
+function decrypt_init(
+    evp_cipher_ctx::EVPCipherContext,
+    evp_cipher::EVPCipher,
+    symetric_key::Vector{UInt8},
+    init_vector::Vector{UInt8})
+    # Initialize encryption context.
+    GC.@preserve symetric_key init_vector begin
+        if ccall(
+            (:EVP_DecryptInit_ex, libcrypto),
+            Cint,
+            (EVPCipherContext, EVPCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            evp_cipher_ctx,
+            evp_cipher,
+            C_NULL,
+            pointer(symetric_key),
+            pointer(init_vector)) != 1
+            throw(OpenSSLError())
+        end
+
+        #if ccall(
+        #    (:EVP_CIPHER_CTX_set_key_length, libcrypto),
+        #    Cint,
+        #    (EVPCipherContext, Cint),
+        #    evp_cipher_ctx,
+        #    length(sym_key)) != 1
+        #    throw(OpenSSLError())
+        #end
+    end
+end
+
+function encrypt_init(
+    evp_cipher_ctx::EVPCipherContext,
+    evp_cipher::EVPCipher,
+    symetric_key::Vector{UInt8},
+    init_vector::Vector{UInt8})
+    # Initialize encryption context.
+    GC.@preserve symetric_key init_vector begin
+        if ccall(
+            (:EVP_EncryptInit_ex, libcrypto),
+            Cint,
+            (EVPCipherContext, EVPCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            evp_cipher_ctx,
+            evp_cipher,
+            C_NULL,
+            pointer(symetric_key),
+            pointer(init_vector)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function cipher_update(evp_cipher_ctx::EVPCipherContext, in_data::Vector{UInt8})::Vector{UInt8}
+    in_length = length(in_data)
+
+    block_size = get_block_size(evp_cipher_ctx)
+    enc_length = Int((in_length + block_size - 1) / block_size * block_size)
+
+    out_data = Vector{UInt8}(undef, enc_length)
+    out_length = Ref{UInt32}(0)
+
+    GC.@preserve in_data out_data out_length begin
+        if ccall(
+            (:EVP_CipherUpdate, libcrypto),
+            Cint,
+            (EVPCipherContext, Ptr{UInt8}, Ptr{Int32}, Ptr{UInt8}, Cint),
+            evp_cipher_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length),
+            pointer(in_data),
+            in_length) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    @show out_length.x
+
+    resize!(out_data, out_length.x)
+
+    return out_data
+end
+
+function cipher_final(evp_cipher_ctx::EVPCipherContext)::Vector{UInt8}
+    block_size = get_block_size(evp_cipher_ctx)
+
+    out_data = Vector{UInt8}(undef, block_size)
+    out_length = Ref{Int32}(0)
+
+    GC.@preserve out_data out_length begin
+        if ccall(
+            (:EVP_CipherFinal_ex, libcrypto),
+            Cint,
+            (EVPCipherContext, Ptr{UInt8}, Ptr{Int32}),
+            evp_cipher_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length)) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    resize!(out_data, out_length.x)
+
+    return out_data
+end
+
+function cipher(evp_cipher_ctx::EVPCipherContext, in_io::IO, out_io::IO)
+    while !eof(in_io)
+        available_bytes = bytesavailable(in_io)
+        in_data = read(in_io, available_bytes)
+        write(out_io, cipher_update(evp_cipher_ctx, in_data))
+    end
+
+    write(out_io, cipher_final(evp_cipher_ctx))
+
+    return seek(out_io, 0)
+end
+
+get_block_size(evp_cipher_ctx::EVPCipherContext)::Int32 = ccall(
+    (:EVP_CIPHER_CTX_block_size, libcrypto),
+    Int32,
+    (EVPCipherContext,),
+    evp_cipher_ctx)
+
+get_key_length(evp_cipher_ctx::EVPCipherContext)::Int32 = ccall(
+    (:EVP_CIPHER_CTX_key_length, libcrypto),
+    Int32,
+    (EVPCipherContext,),
+    evp_cipher_ctx)
+
+get_init_vector_length(evp_cipher_ctx::EVPCipherContext)::Int32 = ccall(
+    (:EVP_CIPHER_CTX_iv_length, libcrypto),
+    Int32,
+    (EVPCipherContext,),
+    evp_cipher_ctx)
+
+function Base.getproperty(evp_cipher_ctx::EVPCipherContext, name::Symbol)
+    if name === :block_size
+        return get_block_size(evp_cipher_ctx)
+    elseif name === :key_length
+        return get_key_length(evp_cipher_ctx)
+    elseif name === :init_vector_length
+        return get_init_vector_length(evp_cipher_ctx)
+    else
+        # fallback to getfield
+        return getfield(evp_cipher_ctx, name)
+    end
 end
 
 """
@@ -733,6 +1002,8 @@ EVPSHA256()::EVPDigest = EVPDigest(ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, (
 EVPSHA384()::EVPDigest = EVPDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, ()))
 
 EVPSHA512()::EVPDigest = EVPDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
+
+EVPDSS1()::EVPDigest = EVPDigest(ccall((:EVP_dss1, libcrypto), Ptr{Cvoid}, ()))
 
 """
     EVP Message Digest Context.
@@ -774,7 +1045,7 @@ function digest_init(evp_digest_ctx::EVPDigestContext, evp_digest::EVPDigest)
         (EVPDigestContext, EVPDigest, Ptr{Cvoid}),
         evp_digest_ctx,
         evp_digest,
-        C_NULL) == 0
+        C_NULL) != 1
         throw(OpenSSLError())
     end
 end
@@ -787,7 +1058,7 @@ function digest_update(evp_digest_ctx::EVPDigestContext, in_data::Vector{UInt8})
             (EVPDigestContext, Ptr{UInt8}, Csize_t),
             evp_digest_ctx,
             pointer(in_data),
-            length(in_data)) == 0
+            length(in_data)) != 1
             throw(OpenSSLError())
         end
     end
@@ -804,7 +1075,7 @@ function digest_final(evp_digest_ctx::EVPDigestContext)::Vector{UInt8}
             (EVPDigestContext, Ptr{UInt8}, Ptr{UInt32}),
             evp_digest_ctx,
             pointer(out_data),
-            pointer_from_objref(out_length)) == 0
+            pointer_from_objref(out_length)) != 1
             throw(OpenSSLError())
         end
     end
@@ -820,7 +1091,7 @@ end
 function digest(evp_digest::EVPDigest, io::IO)
     md_ctx = EVPDigestContext()
 
-    digest_init(md_ctx, EVPMD5())
+    digest_init(md_ctx, evp_digest)
 
     while !eof(io)
         available_bytes = bytesavailable(io)
@@ -1331,11 +1602,68 @@ function add_entry(x509_name::X509Name, field::String, value::String)
         value,
         -1,
         -1,
-        0) == 0
+        0) != 1
         throw(OpenSSLError())
     end
 
     return nothing
+end
+
+"""
+    X509_EXTENSION
+"""
+mutable struct X509Extension
+    x509_ext::Ptr{Cvoid}
+
+    function X509Extension(x509_ext::Ptr{Cvoid})
+        x509_ext = new(x509_ext)
+
+        finalizer(free, x509_ext)
+        return x509_ext
+    end
+
+    function X509Extension(name::String, value::String)
+        x509_ext = ccall(
+            (:X509V3_EXT_conf, libcrypto),
+            Ptr{Cvoid},
+            (Ptr{Cvoid}, Ptr{Cvoid}, Cstring, Cstring),
+            C_NULL,
+            C_NULL,
+            name,
+            value)
+        if x509_ext == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return X509Extension(x509_ext)
+    end
+end
+
+function free(x509_ext::X509Extension)
+    ccall(
+        (:X509_EXTENSION_free, libcrypto),
+        Cvoid,
+        (X509Extension,),
+        x509_ext)
+
+    x509_ext.x509_ext = C_NULL
+    return nothing
+end
+
+"""
+    X509Extension does not support up ref. Duplicate the extension instead.
+"""
+function up_ref(x509_ext::X509Extension)::Ptr{Cvoid}
+    x509_ext = ccall(
+        (:X509_EXTENSION_dup, libcrypto),
+        Ptr{Cvoid},
+        (X509Extension,),
+        x509_ext)
+    if x509_ext == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return x509_ext
 end
 
 """
@@ -1400,6 +1728,16 @@ function free(x509_cert::X509Certificate)
     return nothing
 end
 
+function up_ref(x509_cert::X509Certificate)::Ptr{Cvoid}
+    _ = ccall(
+        (:X509_up_ref, libcrypto),
+        Cint,
+        (X509Certificate,),
+        x509_cert)
+
+    return x509_cert.x509
+end
+
 function Base.write(io::IO, x509_cert::X509Certificate)
     bio_stream = OpenSSL.BIOStream(io)
 
@@ -1443,6 +1781,18 @@ function sign_certificate(x509_cert::X509Certificate, evp_pkey::EvpPKey)
     end
 end
 
+function add(x509_cert::X509Certificate, x509_ext::X509Extension)
+    if ccall(
+        (:X509_add_ext, libcrypto),
+        Cint,
+        (X509Certificate, X509Extension, Cint),
+        x509_cert,
+        x509_ext,
+        -1) != 1
+        throw(OpenSSLError())
+    end
+end
+
 function get_subject_name(x509_cert::X509Certificate)::X509Name
     x509_name = ccall(
         (:X509_get_subject_name, libcrypto),
@@ -1470,7 +1820,7 @@ function set_subject_name(x509_cert::X509Certificate, x509_name::X509Name)
         Cint,
         (X509Certificate, X509Name),
         x509_cert,
-        x509_name) == 0
+        x509_name) != 1
         throw(OpenSSLError())
     end
 end
@@ -1501,7 +1851,7 @@ function set_issuer_name(x509_cert::X509Certificate, x509_name::X509Name)
         (:X509_set_issuer_name, libcrypto),
         Cint, (X509Certificate, X509Name),
         x509_cert,
-        x509_name) == 0
+        x509_name) != 1
         throw(OpenSSLError())
     end
 end
@@ -1526,7 +1876,7 @@ function set_time_not_before(x509_cert::X509Certificate, asn1_time::Asn1Time)
         Cint,
         (X509Certificate, Asn1Time),
         x509_cert,
-        asn1_time) == 0
+        asn1_time) != 1
         throw(OpenSSLError())
     end
 end
@@ -1551,7 +1901,7 @@ function set_time_not_after(x509_cert::X509Certificate, asn1_time::Asn1Time)
         Cint,
         (X509Certificate, Asn1Time),
         x509_cert,
-        asn1_time) == 0
+        asn1_time) != 1
         throw(OpenSSLError())
     end
 end
@@ -1572,7 +1922,7 @@ function set_version(x509_cert::X509Certificate, version::Int)
         Cint,
         (X509Certificate, Cint),
         x509_cert,
-        version) == 0
+        version) != 1
         throw(OpenSSLError())
     end
 end
@@ -1596,7 +1946,7 @@ function set_public_key(x509_cert::X509Certificate, evp_pkey::EvpPKey)
         Cint,
         (X509Certificate, EvpPKey),
         x509_cert,
-        evp_pkey) == 0
+        evp_pkey) != 1
         throw(OpenSSLError())
     end
 end
@@ -1753,7 +2103,7 @@ function set_subject_name(x509_req::X509Request, x509_name::X509Name)
         Cint,
         (X509Request, X509Name),
         x509_req,
-        x509_name) == 0
+        x509_name) != 1
         throw(OpenSSLError())
     end
 end
@@ -1777,7 +2127,7 @@ function set_public_key(x509_req::X509Request, evp_pkey::EvpPKey)
         Cint,
         (X509Request, EvpPKey),
         x509_req,
-        evp_pkey) == 0
+        evp_pkey) != 1
         throw(OpenSSLError())
     end
 end
@@ -1802,6 +2152,124 @@ function Base.setproperty!(x509_req::X509Request, name::Symbol, value)
         # fallback to setfield
         setfield!(x509_req, name, value)
     end
+end
+
+"""
+    X509 Store.
+"""
+mutable struct X509Store
+    x509_store::Ptr{Cvoid}
+
+    function X509Store(x509_store::Ptr{Cvoid})
+        x509_store = new(x509_store)
+        finalizer(free, x509_store)
+
+        return x509_store
+    end
+
+    function X509Store()
+        x509_store = ccall(
+            (:X509_STORE_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if x509_store == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return X509Store(x509_store)
+    end
+end
+
+function free(x509_store::X509Store)
+    ccall(
+        (:X509_STORE_free, libcrypto),
+        Cvoid,
+        (X509Store,),
+        x509_store)
+
+    x509_store.x509_store = C_NULL
+    return nothing
+end
+
+function add_cert(x509_store::X509Store, x509_cert::X509Certificate)
+    if ccall(
+        (:X509_STORE_add_cert, libcrypto),
+        Cint,
+        (X509Store, X509Certificate),
+        x509_store,
+        x509_cert) != 1
+        throw(OpenSSLError())
+    end
+end
+
+"""
+    Stack.
+"""
+mutable struct StackOf{T}
+    sk::Ptr{Cvoid}
+
+    function StackOf{T}(sk::Ptr{Cvoid}) where {T}
+        stack_of = new(sk)
+
+        finalizer(free, stack_of)
+        return stack_of
+    end
+
+    function StackOf{T}() where {T}
+        sk = ccall(
+            (:OPENSSL_sk_new_null, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if sk == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return StackOf{T}(sk)
+    end
+end
+
+function free(stack_of::StackOf{T}) where {T}
+    ccall(
+        (:OPENSSL_sk_free, libcrypto),
+        Cvoid,
+        (StackOf{T},),
+        stack_of)
+
+    stack_of.sk = C_NULL
+    return nothing
+end
+
+function push(stack_of::StackOf{T}, element::T) where {T}
+    count = ccall(
+        (:OPENSSL_sk_push, libcrypto),
+        Cint,
+        (StackOf{T}, Ptr{Cvoid}),
+        stack_of,
+        up_ref(element))
+
+    if count == 0
+        throw(OpenSSLError())
+    end
+
+    return count
+end
+
+function pop(stack_of::StackOf{T}) where {T}
+    ptr = ccall(
+        (:OPENSSL_sk_pop, libcrypto),
+        Ptr{Cvoid},
+        (StackOf{T},),
+        stack_of)
+
+    return T(ptr)
+end
+
+function Base.length(stack_of::StackOf{T}) where {T}
+    return ccall(
+        (:OPENSSL_sk_num, libcrypto),
+        Cint,
+        (StackOf{T},),
+        stack_of)
 end
 
 """
@@ -1863,50 +2331,41 @@ function free(p12_object::P12Object)
     return nothing
 end
 
-"""
-    X509 Store.
-"""
-mutable struct X509Store
-    x509_store::Ptr{Cvoid}
+function Base.write(io::IO, p12_object::P12Object)
+    bio_stream = OpenSSL.BIOStream(io)
 
-    X509Store(x509_store::Ptr{Cvoid}) = new(x509_store)
+    GC.@preserve bio_stream begin
+        bio_stream_set_data(bio_stream)
 
-    function X509Store()
-        x509_store = ccall(
-            (:X509_STORE_new, libcrypto),
-            Ptr{Cvoid},
-            ())
-        if x509_store == C_NULL
+        if ccall(
+            (:i2d_PKCS12_bio, libcrypto),
+            Cint,
+            (BIO, P12Object),
+            bio_stream.bio,
+            p12_object) != 1
             throw(OpenSSLError())
         end
-
-        x509_store = new(x509_store)
-        finalizer(free, x509_store)
-
-        return x509_store
     end
 end
 
-function free(x509_store::X509Store)
-    ccall(
-        (:X509_STORE_free, libcrypto),
-        Cvoid,
-        (X509Store,),
-        x509_store)
+function unpack(p12_object::P12Object)
+    evp_pkey::EvpPKey = EvpPKey(C_NULL)
+    x509_cert::X509Certificate = X509Certificate(C_NULL)
+    x509_stack::StackOf{X509Certificate} = StackOf{X509Certificate}(C_NULL)
 
-    x509_store.x509_store = C_NULL
-    return nothing
-end
-
-function add_cert(x509_store::X509Store, x509_cert::X509Certificate)
     if ccall(
-        (:X509_STORE_add_cert, libcrypto),
+        (:PKCS12_parse, libcrypto),
         Cint,
-        (X509Store, X509Certificate),
-        x509_store,
-        x509_cert) != 1
+        (P12Object, Cstring, Ref{EvpPKey}, Ref{X509Certificate}, Ref{StackOf{X509Certificate}}),
+        p12_object,
+        C_NULL,
+        evp_pkey,
+        x509_cert,
+        x509_stack) != 1
         throw(OpenSSLError())
     end
+
+    return evp_pkey, x509_cert, x509_stack
 end
 
 """
@@ -2477,7 +2936,7 @@ function Base.String(big_num::BigNum)
         Cint,
         (BIO, BigNum),
         bio,
-        big_num) == 0
+        big_num) != 1
         throw(OpenSSLError())
     end
 
@@ -2500,7 +2959,7 @@ function Base.String(asn1_time::Asn1Time)
         Cint,
         (BIO, Asn1Time),
         bio,
-        asn1_time) == 0
+        asn1_time) != 1
         throw(OpenSSLError())
     end
 
@@ -2523,6 +2982,33 @@ time_not_after: $(x509_cert.time_not_after)""")
 
     seek(io, 0)
     return String(read(io))
+end
+
+function Base.String(x509_ext::X509Extension)
+    if x509_ext.x509_ext == C_NULL
+        return "C_NULL"
+    end
+
+    io = IOBuffer()
+
+    bio = BIO(BIOMethod_mem())
+
+    _ = ccall(
+        (:X509V3_EXT_print, libcrypto),
+        Cint,
+        (BIO, X509Extension, Cint, Ptr{Cvoid}),
+        bio,
+        x509_ext,
+        0,
+        C_NULL)
+
+    update_tls_error_state()
+
+    result = String(bio_get_mem_data(bio))
+
+    free(bio)
+
+    return result
 end
 
 function Base.String(x509_cert::X509Request)
@@ -2582,6 +3068,8 @@ Base.show(io::IO, asn1_time::Asn1Time) = write(io, String(asn1_time))
 Base.show(io::IO, x509_name::X509Name) = write(io, String(x509_name))
 
 Base.show(io::IO, x509_cert::X509Certificate) = write(io, String(x509_cert))
+
+Base.show(io::IO, x509_ext::X509Extension) = write(io, String(x509_ext))
 
 Base.show(io::IO, x509_req::X509Request) = write(io, String(x509_req))
 
@@ -2649,6 +3137,16 @@ function update_tls_error_state()
         error_str = get_error()
         task_local_storage(:openssl_err, error_str)
     end
+end
+
+function version(; version_type::OpenSSLVersion=OPENSSL_VERSION)::String
+    version = ccall(
+        (:OpenSSL_version, libcrypto),
+        Cstring,
+        (Cint,),
+        version_type)
+
+    return unsafe_string(version)
 end
 
 const OPEN_SSL_INIT = Ref{OpenSSLInit}()

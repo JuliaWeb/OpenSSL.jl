@@ -31,6 +31,12 @@ end
     @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_ctrl_ptr != C_NULL
 end
 
+@testset "RandomBytes" begin
+    random_data = random_bytes(64)
+
+    @test length(random_data) == 64
+end
+
 @testset "BigNumbers" begin
     n1 = BigNum(0x4)
     n2 = BigNum(0x8)
@@ -210,6 +216,9 @@ end
     adjust(x509_certificate.time_not_before, Second(0))
     adjust(x509_certificate.time_not_after, Year(1))
 
+    ext = X509Extension("subjectAltName", "DNS:localhost")
+    OpenSSL.add(x509_certificate, ext)
+
     sign_certificate(x509_certificate, evp_pkey)
 
     iob = IOBuffer()
@@ -217,6 +226,7 @@ end
 
     seek(iob, 0)
     cert_pem = String(read(iob))
+    @show cert_pem
 
     x509_certificate2 = X509Certificate(cert_pem)
 
@@ -228,8 +238,19 @@ end
 
     @test x509_string == x509_string2
 
-    p12 = P12Object(evp_pkey, x509_certificate)
-    @show p12
+    p12_object = P12Object(evp_pkey, x509_certificate)
+    #@show p12
+    #io = IOBuffer()
+    #write(io, p12)
+
+    open("ca.pem", "a") do io
+        write(io, x509_certificate)
+    end
+
+    OpenSSL.unpack(p12_object)
+
+    #seek(io, 0)
+    # @show "p12:" String(read(io))
 end
 
 #https://mariadb.com/docs/security/encryption/in-transit/create-self-signed-certificates-keys-openssl/
@@ -273,9 +294,8 @@ end
 
     sign_request(x509_request, evp_pkey)
 
-    @show x509_request.public_key
-
-    @show x509_request
+    # @show x509_request.public_key
+    # @show x509_request
 
     # Create a certificate.
     x509_certificate = X509Certificate()
@@ -292,18 +312,13 @@ end
     adjust(x509_certificate.time_not_after, Year(1))
 
     sign_certificate(x509_certificate, evp_pkey_ca)
-    @show x509_certificate
-    # TODO
-    # EVP_PKEY CApkey 
-    # sign()
+    # @show x509_certificate
 
-    io = IOBuffer()
-    write(io, x509_certificate)
-    seek(io, 0)
-    @show String(read(io))
-
-    @show x509_certificate
-    @show x509_certificate.version
+    st = StackOf{X509Certificate}()
+    @show length(st)
+    @show OpenSSL.push(st, root_certificate)
+    @show OpenSSL.push(st, x509_certificate)
+    @show length(st)
 end
 
 @testset "ErrorTaskTLS" begin
@@ -419,4 +434,94 @@ function test_client()
     close(ssl_stream)
     finalize(ssl_ctx)
     return nothing
+end
+
+@testset "PKCS12" begin
+    x509_certificate = X509Certificate()
+
+    evp_pkey = EvpPKey(rsa_generate_key())
+    x509_certificate.public_key = evp_pkey
+
+    x509_name = X509Name()
+    add_entry(x509_name, "C", "US")
+    add_entry(x509_name, "ST", "Isles of Redmond")
+    add_entry(x509_name, "CN", "www.redmond.com")
+
+    x509_certificate.subject_name = x509_name
+    x509_certificate.issuer_name = x509_name
+
+    adjust(x509_certificate.time_not_before, Second(0))
+    adjust(x509_certificate.time_not_after, Year(1))
+
+    sign_certificate(x509_certificate, evp_pkey)
+
+    p12_object = P12Object(evp_pkey, x509_certificate)
+
+    open("file.p12", "a") do io
+        write(io, p12_object)
+    end
+
+    @show evp_pkey.key_type
+end
+
+@testset "Encrypt" begin
+    sym_key = random_bytes(OpenSSL.EVP_MAX_KEY_LENGTH)
+    init_vec = random_bytes(OpenSSL.EVP_MAX_IV_LENGTH)
+
+    enc_evp_cipher_ctx = EVPCipherContext()
+    encrypt_init(enc_evp_cipher_ctx, EVPBlowFishCBC(), sym_key, init_vec)
+
+    dec_evp_cipher_ctx = EVPCipherContext()
+    decrypt_init(dec_evp_cipher_ctx, EVPBlowFishCBC(), sym_key, init_vec)
+
+    in_data = IOBuffer("ala ma kota 4i4pi34i45434341234567890abcd_")
+    enc_data = IOBuffer()
+
+    cipher(enc_evp_cipher_ctx, in_data, enc_data)
+    @show String(read(enc_data))
+    seek(enc_data, 0)
+
+    dec_data = IOBuffer()
+    cipher(dec_evp_cipher_ctx, enc_data, dec_data)
+    @show String(read(dec_data))
+    seek(dec_data, 0)
+
+    @test 1 == 1
+end
+
+@testset "StackOf{X509Extension}" begin
+    ext1 = X509Extension("subjectAltName", "DNS:openssl.jl.com")
+    ext2 = X509Extension("keyUsage", "digitalSignature, keyEncipherment, keyAgreement")
+    ext3 = X509Extension("basicConstraints", "CA:FALSE")
+
+    st = StackOf{X509Extension}()
+    OpenSSL.push(st, ext1)
+    OpenSSL.push(st, ext2)
+    OpenSSL.push(st, ext3)
+
+    @test String(ext1) == "DNS:openssl.jl.com"
+    @test String(ext2) == "Digital Signature, Key Encipherment, Key Agreement"
+    @test String(ext3) == "CA:FALSE"
+
+    finalize(ext1)
+    finalize(ext2)
+    finalize(ext3)
+
+    @test length(st) == 3
+
+    ext_1 = OpenSSL.pop(st)
+    ext_2 = OpenSSL.pop(st)
+    ext_3 = OpenSSL.pop(st)
+
+    @test length(st) == 0
+
+    @test String(ext_1) == "CA:FALSE"
+    @test String(ext_2) == "Digital Signature, Key Encipherment, Key Agreement"
+    @test String(ext_3) == "DNS:openssl.jl.com"
+
+    finalize(ext_1)
+    finalize(ext_2)
+    finalize(ext_3)
+
+    finalize(st)
 end
