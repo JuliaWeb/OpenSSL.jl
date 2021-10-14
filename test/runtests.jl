@@ -85,8 +85,8 @@ end
     close(file_handle)
 
     start_line = "==========\n"
-
     certs_pem = split(file_content, start_line; keepempty=false)
+
     cert = certs_pem[2]
 
     x509_cert = X509Certificate(cert)
@@ -96,7 +96,37 @@ end
     @test String(x509_cert.time_not_after) == "Jan 28 12:00:00 2028 GMT"
 
     # finalizer will cleanup
-    #free(x509_cert)
+    #finalize(x509_cert)
+end
+
+@testset "StackOf{X509Certificate}" begin
+    file_handle = open(MozillaCACerts_jll.cacert)
+    file_content = String(read(file_handle))
+    close(file_handle)
+
+    start_line = "==========\n"
+    certs_pem = split(file_content, start_line; keepempty=false)
+
+    x509_certificates = StackOf{X509Certificate}()
+
+    foreach(2:length(certs_pem)) do i
+        x509_cert = X509Certificate(certs_pem[i])
+        OpenSSL.push(x509_certificates, x509_cert)
+        finalize(x509_cert)
+        nothing
+    end
+
+    free(x509_certificates)
+end
+
+@testset "X509Store" begin
+    file_handle = open(MozillaCACerts_jll.cacert)
+    file_content = String(read(file_handle))
+    close(file_handle)
+
+    start_line = "==========\n"
+
+    certs_pem = split(file_content, start_line; keepempty=false)
 
     # X509 store.
     x509_store = X509Store()
@@ -104,7 +134,8 @@ end
     foreach(2:length(certs_pem)) do i
         x509_cert = X509Certificate(certs_pem[i])
         add_cert(x509_store, x509_cert)
-        return free(x509_cert)
+        free(x509_cert)
+        nothing
     end
 
     free(x509_store)
@@ -216,8 +247,8 @@ end
     adjust(x509_certificate.time_not_before, Second(0))
     adjust(x509_certificate.time_not_after, Year(1))
 
-    ext = X509Extension("subjectAltName", "DNS:localhost")
-    OpenSSL.add(x509_certificate, ext)
+    add_extension(x509_certificate, X509Extension("basicConstraints", "CA:TRUE"))
+    add_extension(x509_certificate, X509Extension("keyUsage", "keyCertSign"))
 
     sign_certificate(x509_certificate, evp_pkey)
 
@@ -226,7 +257,6 @@ end
 
     seek(iob, 0)
     cert_pem = String(read(iob))
-    @show cert_pem
 
     x509_certificate2 = X509Certificate(cert_pem)
 
@@ -234,18 +264,10 @@ end
     x509_string2 = String(x509_certificate2)
 
     public_key = x509_certificate.public_key
-    @show public_key
 
     @test x509_string == x509_string2
 
     p12_object = P12Object(evp_pkey, x509_certificate)
-    #@show p12
-    #io = IOBuffer()
-    #write(io, p12)
-
-    open("ca.pem", "a") do io
-        write(io, x509_certificate)
-    end
 
     OpenSSL.unpack(p12_object)
 
@@ -253,8 +275,6 @@ end
     # @show "p12:" String(read(io))
 end
 
-#https://mariadb.com/docs/security/encryption/in-transit/create-self-signed-certificates-keys-openssl/
-#https://chromium.googlesource.com/chromiumos/platform/entd/+/fb446ee0213243fc4ca1ade16bb56ecde8935ea5/pkcs11.cc
 @testset "SignCertCertificate" begin
     # Create a root certificate.
     x509_certificate = X509Certificate()
@@ -273,12 +293,12 @@ end
     adjust(x509_certificate.time_not_before, Second(0))
     adjust(x509_certificate.time_not_after, Year(1))
 
+    add_extension(x509_certificate, X509Extension("basicConstraints", "CA:TRUE"))
+    add_extension(x509_certificate, X509Extension("keyUsage", "keyCertSign"))
+
     sign_certificate(x509_certificate, evp_pkey_ca)
 
     root_certificate = x509_certificate
-
-    #pk = OpenSSL.get_private_key(root_certificate)
-    #@show pk
 
     # Create a certificate sign request.
     x509_request = X509Request()
@@ -292,10 +312,16 @@ end
 
     x509_request.subject_name = x509_name
 
-    sign_request(x509_request, evp_pkey)
+    x509_exts = StackOf{X509Extension}()
 
-    # @show x509_request.public_key
-    # @show x509_request
+    ext = X509Extension("subjectAltName", "DNS:localhost")
+    OpenSSL.push(x509_exts, ext)
+    add_extensions(x509_request, x509_exts)
+    finalize(ext)
+
+    finalize(x509_exts)
+
+    sign_request(x509_request, evp_pkey)
 
     # Create a certificate.
     x509_certificate = X509Certificate()
@@ -305,6 +331,14 @@ end
     x509_certificate.subject_name = x509_request.subject_name
     x509_certificate.issuer_name = root_certificate.subject_name
 
+    x509_exts = x509_request.extensions
+
+    ext = OpenSSL.pop(x509_exts)
+
+    add_extension(x509_certificate, ext)
+    add_extension(x509_certificate, X509Extension("keyUsage", "digitalSignature, nonRepudiation, keyEncipherment"))
+    add_extension(x509_certificate, X509Extension("basicConstraints", "CA:FALSE"))
+
     # Set public key
     x509_certificate.public_key = x509_request.public_key
 
@@ -312,13 +346,6 @@ end
     adjust(x509_certificate.time_not_after, Year(1))
 
     sign_certificate(x509_certificate, evp_pkey_ca)
-    # @show x509_certificate
-
-    st = StackOf{X509Certificate}()
-    @show length(st)
-    @show OpenSSL.push(st, root_certificate)
-    @show OpenSSL.push(st, x509_certificate)
-    @show length(st)
 end
 
 @testset "ErrorTaskTLS" begin
@@ -457,11 +484,9 @@ end
 
     p12_object = P12Object(evp_pkey, x509_certificate)
 
-    open("file.p12", "a") do io
-        write(io, p12_object)
-    end
-
-    @show evp_pkey.key_type
+    #open("file.p12", "a") do io
+    #    write(io, p12_object)
+    #end
 end
 
 @testset "Encrypt" begin

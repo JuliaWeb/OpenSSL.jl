@@ -22,11 +22,11 @@ Error handling:
 """
 
 export TLSv12ClientMethod, TLSv12ServerMethod,
-    SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name,
-    X509Certificate, X509Request, X509Store, X509Extension, StackOf, P12Object,
-    EVPCipherContext, EVPEncNull, EVPBlowFishCBC, EVPBlowFishECB, EVPBlowFishCFB,
-    EVPBlowFishOFB, EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, encrypt_init, cipher,
-    EVPDigestContext, decrypt_init, digest_init, digest_update, digest_final, digest,
+    SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, StackOf, X509Certificate,
+    X509Request, X509Store, X509Extension, P12Object, EVPDigestContext, EVPCipherContext,
+    EVPEncNull, EVPBlowFishCBC, EVPBlowFishECB, EVPBlowFishCFB, EVPBlowFishOFB,
+    EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, encrypt_init, cipher,
+    add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final, digest,
     EVPMDNull, EVPMD2, EVPMD5, EVPSHA1, EVPDSS1, random_bytes, rsa_generate_key, add_entry,
     sign_certificate, sign_request, adjust, add_cert, eof, isreadable, iswritable, bytesavailable, read,
     unsafe_write, connect, get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
@@ -1531,6 +1531,76 @@ Dates.adjust(asn1_time::Asn1Time, days::Day) = adjust(asn1_time, Second(days))
 Dates.adjust(asn1_time::Asn1Time, years::Year) = adjust(asn1_time, Day(365 * years.value))
 
 """
+    Stack Of.
+"""
+mutable struct StackOf{T}
+    sk::Ptr{Cvoid}
+
+    function StackOf{T}(sk::Ptr{Cvoid}) where {T}
+        stack_of = new(sk)
+
+        finalizer(free, stack_of)
+        return stack_of
+    end
+
+    function StackOf{T}() where {T}
+        sk = ccall(
+            (:OPENSSL_sk_new_null, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if sk == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return StackOf{T}(sk)
+    end
+end
+
+function free(stack_of::StackOf{T}) where {T}
+    ccall(
+        (:OPENSSL_sk_free, libcrypto),
+        Cvoid,
+        (StackOf{T},),
+        stack_of)
+
+    stack_of.sk = C_NULL
+    return nothing
+end
+
+function push(stack_of::StackOf{T}, element::T) where {T}
+    count = ccall(
+        (:OPENSSL_sk_push, libcrypto),
+        Cint,
+        (StackOf{T}, Ptr{Cvoid}),
+        stack_of,
+        up_ref(element))
+
+    if count == 0
+        throw(OpenSSLError())
+    end
+
+    return count
+end
+
+function pop(stack_of::StackOf{T}) where {T}
+    ptr = ccall(
+        (:OPENSSL_sk_pop, libcrypto),
+        Ptr{Cvoid},
+        (StackOf{T},),
+        stack_of)
+
+    return T(ptr)
+end
+
+function Base.length(stack_of::StackOf{T}) where {T}
+    return ccall(
+        (:OPENSSL_sk_num, libcrypto),
+        Cint,
+        (StackOf{T},),
+        stack_of)
+end
+
+"""
     X509 Name.
 """
 mutable struct X509Name
@@ -1781,7 +1851,7 @@ function sign_certificate(x509_cert::X509Certificate, evp_pkey::EvpPKey)
     end
 end
 
-function add(x509_cert::X509Certificate, x509_ext::X509Extension)
+function add_extension(x509_cert::X509Certificate, x509_ext::X509Extension)
     if ccall(
         (:X509_add_ext, libcrypto),
         Cint,
@@ -2043,6 +2113,17 @@ function Base.write(io::IO, x509_req::X509Request)
     end
 end
 
+function add_extensions(x509_req::X509Request, x509_exts::StackOf{X509Extension})
+    if ccall(
+        (:X509_REQ_add_extensions, libcrypto),
+        Cint,
+        (X509Request, StackOf{X509Extension}),
+        x509_req,
+        x509_exts) != 1
+        throw(OpenSSLError())
+    end
+end
+
 function sign_request(x509_req::X509Request, evp_pkey::EvpPKey)
     evp_md = ccall(
         (:EVP_sha256, libcrypto),
@@ -2132,11 +2213,26 @@ function set_public_key(x509_req::X509Request, evp_pkey::EvpPKey)
     end
 end
 
+function get_extensions(x509_req::X509Request)
+    sk = ccall(
+        (:X509_REQ_get_extensions, libcrypto),
+        Ptr{Cvoid},
+        (X509Request,),
+        x509_req)
+    if sk == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return StackOf{X509Extension}(sk)
+end
+
 function Base.getproperty(x509_req::X509Request, name::Symbol)
     if name === :subject_name
         return get_subject_name(x509_req)
     elseif name === :public_key
         return get_public_key(x509_req)
+    elseif name === :extensions
+        return get_extensions(x509_req)
     else
         # fallback to getfield
         return getfield(x509_req, name)
@@ -2200,76 +2296,6 @@ function add_cert(x509_store::X509Store, x509_cert::X509Certificate)
         x509_cert) != 1
         throw(OpenSSLError())
     end
-end
-
-"""
-    Stack.
-"""
-mutable struct StackOf{T}
-    sk::Ptr{Cvoid}
-
-    function StackOf{T}(sk::Ptr{Cvoid}) where {T}
-        stack_of = new(sk)
-
-        finalizer(free, stack_of)
-        return stack_of
-    end
-
-    function StackOf{T}() where {T}
-        sk = ccall(
-            (:OPENSSL_sk_new_null, libcrypto),
-            Ptr{Cvoid},
-            ())
-        if sk == C_NULL
-            throw(OpenSSLError())
-        end
-
-        return StackOf{T}(sk)
-    end
-end
-
-function free(stack_of::StackOf{T}) where {T}
-    ccall(
-        (:OPENSSL_sk_free, libcrypto),
-        Cvoid,
-        (StackOf{T},),
-        stack_of)
-
-    stack_of.sk = C_NULL
-    return nothing
-end
-
-function push(stack_of::StackOf{T}, element::T) where {T}
-    count = ccall(
-        (:OPENSSL_sk_push, libcrypto),
-        Cint,
-        (StackOf{T}, Ptr{Cvoid}),
-        stack_of,
-        up_ref(element))
-
-    if count == 0
-        throw(OpenSSLError())
-    end
-
-    return count
-end
-
-function pop(stack_of::StackOf{T}) where {T}
-    ptr = ccall(
-        (:OPENSSL_sk_pop, libcrypto),
-        Ptr{Cvoid},
-        (StackOf{T},),
-        stack_of)
-
-    return T(ptr)
-end
-
-function Base.length(stack_of::StackOf{T}) where {T}
-    return ccall(
-        (:OPENSSL_sk_num, libcrypto),
-        Cint,
-        (StackOf{T},),
-        stack_of)
 end
 
 """
@@ -2466,7 +2492,7 @@ end
 # int SSL_CTX_set_cipher_list(SSL_CTX *ctx, const char *str);
 
 """
-    Configures available TLSv1.3 ciphersuites.
+    Configures available TLSv1.3 cipher suites.
 """
 function ssl_set_ciphersuites(ssl_context::SSLContext, cipher_suites::String)
     if ccall(
