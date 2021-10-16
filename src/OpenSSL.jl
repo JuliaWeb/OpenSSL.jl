@@ -22,14 +22,14 @@ Error handling:
 """
 
 export TLSv12ClientMethod, TLSv12ServerMethod,
-    SSLStream, BigNum, EvpPKey, RSA, Asn1Time, X509Name, StackOf, X509Certificate,
-    X509Request, X509Store, X509Extension, P12Object, EVPDigestContext, EVPCipherContext,
-    EVPEncNull, EVPBlowFishCBC, EVPBlowFishECB, EVPBlowFishCFB, EVPBlowFishOFB,
-    EVPAES128CBC, EVPAES128ECB, EVPAES128CFB, EVPAES128OFB, encrypt_init, cipher,
-    add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final, digest,
-    EVPMDNull, EVPMD2, EVPMD5, EVPSHA1, EVPDSS1, random_bytes, rsa_generate_key, add_entry,
-    sign_certificate, sign_request, adjust, add_cert, eof, isreadable, iswritable, bytesavailable, read,
-    unsafe_write, connect, get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
+    SSLStream, BigNum, EvpPKey, RSA, DSA, Asn1Time, X509Name, StackOf, X509Certificate,
+    X509Request, X509Store, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
+    EvpEncNull, EvpBlowFishCBC, EVPBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
+    EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
+    encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update,
+    digest_final, digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request,
+    adjust, add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
+    get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
 const Option{T} = Union{Nothing,T} where {T}
 
@@ -628,9 +628,360 @@ function Base.:%(a::BigNum, b::BigNum)::BigNum
 end
 
 """
+    EVP_CIPHER.
+"""
+mutable struct EvpCipher
+    evp_cipher::Ptr{Cvoid}
+end
+
+EvpEncNull()::EvpCipher = EvpCipher(ccall((:EVP_enc_null, libcrypto), Ptr{Cvoid}, ()))
+
+"""
+    Basic Block Cipher Modes:
+    - ECB Electronic Code Block
+    - CBC Cipher Block Chaining
+    - CFB Cipher Feedback
+    - OFB Output Feedback
+"""
+
+"""
+    Blowfish encryption algorithm in CBC, ECB, CFB and OFB modes.
+"""
+EvpBlowFishCBC()::EvpCipher = EvpCipher(ccall((:EVP_bf_cbc, libcrypto), Ptr{Cvoid}, ()))
+
+EvpBlowFishECB()::EvpCipher = EvpCipher(ccall((:EVP_bf_ecb, libcrypto), Ptr{Cvoid}, ()))
+
+EvpBlowFishCFB()::EvpCipher = EvpCipher(ccall((:EVP_bf_cfb, libcrypto), Ptr{Cvoid}, ()))
+
+EvpBlowFishOFB()::EvpCipher = EvpCipher(ccall((:EVP_bf_ofb, libcrypto), Ptr{Cvoid}, ()))
+
+"""
+    AES with a 128-bit key in CBC, ECB, CFB and OFB modes.
+"""
+EvpAES128CBC()::EvpCipher = EvpCipher(ccall((:EVP_aes_128_cbc, libcrypto), Ptr{Cvoid}, ()))
+
+EvpAES128ECB()::EVPCipher = EvpCipher(ccall((:EVP_aes_128_ecb, libcrypto), Ptr{Cvoid}, ()))
+
+EvpAES128CFB()::EvpCipher = EvpCipher(ccall((:EVP_aes_128_cfb, libcrypto), Ptr{Cvoid}, ()))
+
+EvpAES128OFB()::EvpCipher = EvpCipher(ccall((:EVP_aes_128_ofb, libcrypto), Ptr{Cvoid}, ()))
+
+"""
+    Null cipher, does nothing.
+"""
+EvpEncNull()::EvpCipher = EvpCipher(ccall((:EVP_enc_null, libcrypto), Ptr{Cvoid}, ()))
+
+mutable struct EvpCipherContext
+    evp_cipher_ctx::Ptr{Cvoid}
+
+    function EvpCipherContext(evp_cipher_ctx::Ptr{Cvoid})
+        evp_cipher_ctx = new(evp_cipher_ctx)
+        finalizer(free, evp_cipher_ctx)
+
+        return evp_cipher_ctx
+    end
+
+    function EvpCipherContext()
+        evp_cipher_ctx = ccall(
+            (:EVP_CIPHER_CTX_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if evp_cipher_ctx == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return EvpCipherContext(evp_cipher_ctx)
+    end
+end
+
+function free(evp_cipher_ctx::EvpCipherContext)
+    ccall(
+        (:EVP_CIPHER_CTX_free, libcrypto),
+        Cvoid,
+        (EvpCipherContext,),
+        evp_cipher_ctx)
+
+    evp_cipher_ctx.evp_cipher_ctx = C_NULL
+    return nothing
+end
+
+function decrypt_init(
+    evp_cipher_ctx::EvpCipherContext,
+    evp_cipher::EvpCipher,
+    symetric_key::Vector{UInt8},
+    init_vector::Vector{UInt8})
+    # Initialize encryption context.
+    GC.@preserve symetric_key init_vector begin
+        if ccall(
+            (:EVP_DecryptInit_ex, libcrypto),
+            Cint,
+            (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            evp_cipher_ctx,
+            evp_cipher,
+            C_NULL,
+            pointer(symetric_key),
+            pointer(init_vector)) != 1
+            throw(OpenSSLError())
+        end
+
+        #if ccall(
+        #    (:EVP_CIPHER_CTX_set_key_length, libcrypto),
+        #    Cint,
+        #    (EvpCipherContext, Cint),
+        #    evp_cipher_ctx,
+        #    length(sym_key)) != 1
+        #    throw(OpenSSLError())
+        #end
+    end
+end
+
+function encrypt_init(
+    evp_cipher_ctx::EvpCipherContext,
+    evp_cipher::EvpCipher,
+    symetric_key::Vector{UInt8},
+    init_vector::Vector{UInt8})
+    # Initialize encryption context.
+    GC.@preserve symetric_key init_vector begin
+        if ccall(
+            (:EVP_EncryptInit_ex, libcrypto),
+            Cint,
+            (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            evp_cipher_ctx,
+            evp_cipher,
+            C_NULL,
+            pointer(symetric_key),
+            pointer(init_vector)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function cipher_update(evp_cipher_ctx::EvpCipherContext, in_data::Vector{UInt8})::Vector{UInt8}
+    in_length = length(in_data)
+
+    block_size = get_block_size(evp_cipher_ctx)
+    enc_length = Int((in_length + block_size - 1) / block_size * block_size)
+
+    out_data = Vector{UInt8}(undef, enc_length)
+    out_length = Ref{UInt32}(0)
+
+    GC.@preserve in_data out_data out_length begin
+        if ccall(
+            (:EVP_CipherUpdate, libcrypto),
+            Cint,
+            (EvpCipherContext, Ptr{UInt8}, Ptr{Int32}, Ptr{UInt8}, Cint),
+            evp_cipher_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length),
+            pointer(in_data),
+            in_length) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    @show out_length.x
+
+    resize!(out_data, out_length.x)
+
+    return out_data
+end
+
+function cipher_final(evp_cipher_ctx::EvpCipherContext)::Vector{UInt8}
+    block_size = get_block_size(evp_cipher_ctx)
+
+    out_data = Vector{UInt8}(undef, block_size)
+    out_length = Ref{Int32}(0)
+
+    GC.@preserve out_data out_length begin
+        if ccall(
+            (:EVP_CipherFinal_ex, libcrypto),
+            Cint,
+            (EvpCipherContext, Ptr{UInt8}, Ptr{Int32}),
+            evp_cipher_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length)) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    resize!(out_data, out_length.x)
+
+    return out_data
+end
+
+function cipher(evp_cipher_ctx::EvpCipherContext, in_io::IO, out_io::IO)
+    while !eof(in_io)
+        available_bytes = bytesavailable(in_io)
+        in_data = read(in_io, available_bytes)
+        write(out_io, cipher_update(evp_cipher_ctx, in_data))
+    end
+
+    write(out_io, cipher_final(evp_cipher_ctx))
+
+    return nothing
+end
+
+get_block_size(evp_cipher_ctx::EvpCipherContext)::Int32 = ccall(
+    (:EVP_CIPHER_CTX_block_size, libcrypto),
+    Int32,
+    (EvpCipherContext,),
+    evp_cipher_ctx)
+
+get_key_length(evp_cipher_ctx::EvpCipherContext)::Int32 = ccall(
+    (:EVP_CIPHER_CTX_key_length, libcrypto),
+    Int32,
+    (EvpCipherContext,),
+    evp_cipher_ctx)
+
+get_init_vector_length(evp_cipher_ctx::EvpCipherContext)::Int32 = ccall(
+    (:EVP_CIPHER_CTX_iv_length, libcrypto),
+    Int32,
+    (EvpCipherContext,),
+    evp_cipher_ctx)
+
+function Base.getproperty(evp_cipher_ctx::EvpCipherContext, name::Symbol)
+    if name === :block_size
+        return get_block_size(evp_cipher_ctx)
+    elseif name === :key_length
+        return get_key_length(evp_cipher_ctx)
+    elseif name === :init_vector_length
+        return get_init_vector_length(evp_cipher_ctx)
+    else
+        # fallback to getfield
+        return getfield(evp_cipher_ctx, name)
+    end
+end
+
+"""
+    EVP Message Digest.
+"""
+mutable struct EvpDigest
+    evp_md::Ptr{Cvoid}
+end
+
+EvpMDNull()::EvpDigest = EvpDigest(ccall((:EVP_md_null, libcrypto), Ptr{Cvoid}, ()))
+
+EvpMD2()::EvpDigest = EvpDigest(ccall((:EVP_md2, libcrypto), Ptr{Cvoid}, ()))
+
+EvpMD5()::EvpDigest = EvpDigest(ccall((:EVP_md5, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA1()::EvpDigest = EvpDigest(ccall((:EVP_sha1, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA224()::EvpDigest = EvpDigest(ccall((:EVP_sha224, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA256()::EvpDigest = EvpDigest(ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA384()::EvpDigest = EvpDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA512()::EvpDigest = EvpDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
+
+EvpDSS1()::EvpDigest = EvpDigest(ccall((:EVP_dss1, libcrypto), Ptr{Cvoid}, ()))
+
+"""
+    EVP Message Digest Context.
+"""
+mutable struct EvpDigestContext
+    evp_md_ctx::Ptr{Cvoid}
+
+    function EvpDigestContext()
+        evp_digest_ctx = ccall(
+            (:EVP_MD_CTX_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if evp_digest_ctx == C_NULL
+            throw(OpenSSLError())
+        end
+
+        evp_digest_ctx = new(evp_digest_ctx)
+        finalizer(free, evp_digest_ctx)
+
+        return evp_digest_ctx
+    end
+end
+
+function free(evp_digest_ctx::EvpDigestContext)
+    ccall(
+        (:EVP_MD_CTX_free, libcrypto),
+        Cvoid,
+        (EvpDigestContext,),
+        evp_digest_ctx)
+
+    evp_digest_ctx.evp_md_ctx = C_NULL
+    return nothing
+end
+
+function digest_init(evp_digest_ctx::EvpDigestContext, evp_digest::EvpDigest)
+    if ccall(
+        (:EVP_DigestInit_ex, libcrypto),
+        Cint,
+        (EvpDigestContext, EvpDigest, Ptr{Cvoid}),
+        evp_digest_ctx,
+        evp_digest,
+        C_NULL) != 1
+        throw(OpenSSLError())
+    end
+end
+
+function digest_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
+    GC.@preserve in_data begin
+        if ccall(
+            (:EVP_DigestUpdate, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx,
+            pointer(in_data),
+            length(in_data)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function digest_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
+    out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
+    out_length = Ref{UInt32}(0)
+
+    GC.@preserve out_data out_length begin
+        if ccall(
+            (:EVP_DigestFinal_ex, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            evp_digest_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length)) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    resize!(out_data, out_length.x)
+
+    return out_data
+end
+
+"""
+    Computes the message digest (hash).
+"""
+function digest(evp_digest::EvpDigest, io::IO)
+    md_ctx = EvpDigestContext()
+
+    digest_init(md_ctx, evp_digest)
+
+    while !eof(io)
+        available_bytes = bytesavailable(io)
+        in_data = read(io, available_bytes)
+        digest_update(md_ctx, in_data)
+    end
+
+    result = digest_final(md_ctx)
+
+    finalize(md_ctx)
+
+    return result
+end
+
+"""
     RSA structure.
     The RSA structure consists of several BIGNUM components.
-    It can contain public as well as private RSA keys:
+    It can contain public as well as private RSA keys.
 """
 mutable struct RSA
     rsa::Ptr{Cvoid}
@@ -684,426 +1035,59 @@ function rsa_generate_key(; bits::Int32=Int32(2048))::RSA
 end
 
 """
-    EVP_PKEY, EVP Public Key interface.
+    DSA structure.
 """
-mutable struct EvpPKey
-    evp_pkey::Ptr{Cvoid}
+mutable struct DSA
+    dsa::Ptr{Cvoid}
 
-    function EvpPKey(evp_pkey::Ptr{Cvoid})::EvpPKey
-        evp_pkey = new(evp_pkey)
-        finalizer(free, evp_pkey)
-
-        return evp_pkey
-    end
-
-    function EvpPKey()::EvpPKey
-        evp_pkey = ccall(
-            (:EVP_PKEY_new, libcrypto),
+    function DSA()
+        dsa = ccall(
+            (:DSA_new, libcrypto),
             Ptr{Cvoid},
             ())
-        if evp_pkey == C_NULL
+        if dsa == C_NULL
             throw(OpenSSLError())
         end
 
-        return EvpPKey(evp_pkey)
-    end
+        dsa = new(dsa)
+        finalizer(free, dsa)
 
-    function EvpPKey(rsa::RSA)::EvpPKey
-        evp_pkey = EvpPKey()
-
-        if ccall(
-            (:EVP_PKEY_assign, libcrypto),
-            Cint, (EvpPKey, Cint, RSA),
-            evp_pkey,
-            EVP_PKEY_RSA,
-            rsa) != 1
-            throw(OpenSSLError())
-        end
-
-        rsa.rsa = C_NULL
-        return evp_pkey
+        return dsa
     end
 end
 
-function free(evp_pkey::EvpPKey)
+function free(dsa::DSA)
     ccall(
-        (:EVP_PKEY_free, libcrypto),
+        (:DSA_free, libcrypto),
         Cvoid,
-        (EvpPKey,),
-        evp_pkey)
+        (DSA,),
+        dsa)
 
-    evp_pkey.evp_pkey = C_NULL
+    dsa.dsa = C_NULL
     return nothing
 end
 
-function get_key_type(evp_pkey::EvpPKey)::EvpPKeyType
-    pkey_type = ccall(
-        (:EVP_PKEY_base_id, libcrypto),
-        EvpPKeyType,
-        (EvpPKey,),
-        evp_pkey)
-
-    return pkey_type
-end
-
-function Base.getproperty(evp_pkey::EvpPKey, name::Symbol)
-    if name === :key_type
-        return get_key_type(evp_pkey)
-    else
-        # fallback to getfield
-        return getfield(evp_pkey, name)
-    end
-end
-
 """
-    EVP_CIPHER.
+    Generate DSA key pair.
 """
-mutable struct EVPCipher
-    evp_cipher::Ptr{Cvoid}
-end
+function dsa_generate_key(; bits::Int32=Int32(1024))::DSA
+    dsa = DSA()
 
-EVPEncNull()::EVPCipher = EVPCipher(ccall((:EVP_enc_null, libcrypto), Ptr{Cvoid}, ()))
-
-"""
-    Basic Block Cipher Modes:
-    - ECB Electronic Code Block
-    - CBC Cipher Block Chaining
-    - CFB Cipher Feedback
-    - OFB Output Feedback
-"""
-
-"""
-    Blowfish encryption algorithm in CBC, ECB, CFB and OFB modes.
-"""
-EVPBlowFishCBC()::EVPCipher = EVPCipher(ccall((:EVP_bf_cbc, libcrypto), Ptr{Cvoid}, ()))
-
-EVPBlowFishECB()::EVPCipher = EVPCipher(ccall((:EVP_bf_ecb, libcrypto), Ptr{Cvoid}, ()))
-
-EVPBlowFishCFB()::EVPCipher = EVPCipher(ccall((:EVP_bf_cfb, libcrypto), Ptr{Cvoid}, ()))
-
-EVPBlowFishOFB()::EVPCipher = EVPCipher(ccall((:EVP_bf_ofb, libcrypto), Ptr{Cvoid}, ()))
-
-"""
-    AES with a 128-bit key in CBC, ECB, CFB and OFB modes.
-"""
-EVPAES128CBC()::EVPCipher = EVPCipher(ccall((:EVP_aes_128_cbc, libcrypto), Ptr{Cvoid}, ()))
-
-EVPAES128ECB()::EVPCipher = EVPCipher(ccall((:EVP_aes_128_ecb, libcrypto), Ptr{Cvoid}, ()))
-
-EVPAES128CFB()::EVPCipher = EVPCipher(ccall((:EVP_aes_128_cfb, libcrypto), Ptr{Cvoid}, ()))
-
-EVPAES128OFB()::EVPCipher = EVPCipher(ccall((:EVP_aes_128_ofb, libcrypto), Ptr{Cvoid}, ()))
-
-"""
-    Null cipher, does nothing.
-"""
-EVPEncNull()::EVPCipher = EVPCipher(ccall((:EVP_enc_null, libcrypto), Ptr{Cvoid}, ()))
-
-mutable struct EVPCipherContext
-    evp_cipher_ctx::Ptr{Cvoid}
-
-    function EVPCipherContext(evp_cipher_ctx::Ptr{Cvoid})
-        evp_cipher_ctx = new(evp_cipher_ctx)
-        finalizer(free, evp_cipher_ctx)
-
-        return evp_cipher_ctx
-    end
-
-    function EVPCipherContext()
-        evp_cipher_ctx = ccall(
-            (:EVP_CIPHER_CTX_new, libcrypto),
-            Ptr{Cvoid},
-            ())
-        if evp_cipher_ctx == C_NULL
-            throw(OpenSSLError())
-        end
-
-        return EVPCipherContext(evp_cipher_ctx)
-    end
-end
-
-function free(evp_cipher_ctx::EVPCipherContext)
-    ccall(
-        (:EVP_CIPHER_CTX_free, libcrypto),
-        Cvoid,
-        (EVPCipherContext,),
-        evp_cipher_ctx)
-
-    evp_cipher_ctx.evp_cipher_ctx = C_NULL
-    return nothing
-end
-
-function decrypt_init(
-    evp_cipher_ctx::EVPCipherContext,
-    evp_cipher::EVPCipher,
-    symetric_key::Vector{UInt8},
-    init_vector::Vector{UInt8})
-    # Initialize encryption context.
-    GC.@preserve symetric_key init_vector begin
-        if ccall(
-            (:EVP_DecryptInit_ex, libcrypto),
-            Cint,
-            (EVPCipherContext, EVPCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
-            evp_cipher_ctx,
-            evp_cipher,
-            C_NULL,
-            pointer(symetric_key),
-            pointer(init_vector)) != 1
-            throw(OpenSSLError())
-        end
-
-        #if ccall(
-        #    (:EVP_CIPHER_CTX_set_key_length, libcrypto),
-        #    Cint,
-        #    (EVPCipherContext, Cint),
-        #    evp_cipher_ctx,
-        #    length(sym_key)) != 1
-        #    throw(OpenSSLError())
-        #end
-    end
-end
-
-function encrypt_init(
-    evp_cipher_ctx::EVPCipherContext,
-    evp_cipher::EVPCipher,
-    symetric_key::Vector{UInt8},
-    init_vector::Vector{UInt8})
-    # Initialize encryption context.
-    GC.@preserve symetric_key init_vector begin
-        if ccall(
-            (:EVP_EncryptInit_ex, libcrypto),
-            Cint,
-            (EVPCipherContext, EVPCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
-            evp_cipher_ctx,
-            evp_cipher,
-            C_NULL,
-            pointer(symetric_key),
-            pointer(init_vector)) != 1
-            throw(OpenSSLError())
-        end
-    end
-end
-
-function cipher_update(evp_cipher_ctx::EVPCipherContext, in_data::Vector{UInt8})::Vector{UInt8}
-    in_length = length(in_data)
-
-    block_size = get_block_size(evp_cipher_ctx)
-    enc_length = Int((in_length + block_size - 1) / block_size * block_size)
-
-    out_data = Vector{UInt8}(undef, enc_length)
-    out_length = Ref{UInt32}(0)
-
-    GC.@preserve in_data out_data out_length begin
-        if ccall(
-            (:EVP_CipherUpdate, libcrypto),
-            Cint,
-            (EVPCipherContext, Ptr{UInt8}, Ptr{Int32}, Ptr{UInt8}, Cint),
-            evp_cipher_ctx,
-            pointer(out_data),
-            pointer_from_objref(out_length),
-            pointer(in_data),
-            in_length) != 1
-            throw(OpenSSLError())
-        end
-    end
-
-    @show out_length.x
-
-    resize!(out_data, out_length.x)
-
-    return out_data
-end
-
-function cipher_final(evp_cipher_ctx::EVPCipherContext)::Vector{UInt8}
-    block_size = get_block_size(evp_cipher_ctx)
-
-    out_data = Vector{UInt8}(undef, block_size)
-    out_length = Ref{Int32}(0)
-
-    GC.@preserve out_data out_length begin
-        if ccall(
-            (:EVP_CipherFinal_ex, libcrypto),
-            Cint,
-            (EVPCipherContext, Ptr{UInt8}, Ptr{Int32}),
-            evp_cipher_ctx,
-            pointer(out_data),
-            pointer_from_objref(out_length)) != 1
-            throw(OpenSSLError())
-        end
-    end
-
-    resize!(out_data, out_length.x)
-
-    return out_data
-end
-
-function cipher(evp_cipher_ctx::EVPCipherContext, in_io::IO, out_io::IO)
-    while !eof(in_io)
-        available_bytes = bytesavailable(in_io)
-        in_data = read(in_io, available_bytes)
-        write(out_io, cipher_update(evp_cipher_ctx, in_data))
-    end
-
-    write(out_io, cipher_final(evp_cipher_ctx))
-
-    return seek(out_io, 0)
-end
-
-get_block_size(evp_cipher_ctx::EVPCipherContext)::Int32 = ccall(
-    (:EVP_CIPHER_CTX_block_size, libcrypto),
-    Int32,
-    (EVPCipherContext,),
-    evp_cipher_ctx)
-
-get_key_length(evp_cipher_ctx::EVPCipherContext)::Int32 = ccall(
-    (:EVP_CIPHER_CTX_key_length, libcrypto),
-    Int32,
-    (EVPCipherContext,),
-    evp_cipher_ctx)
-
-get_init_vector_length(evp_cipher_ctx::EVPCipherContext)::Int32 = ccall(
-    (:EVP_CIPHER_CTX_iv_length, libcrypto),
-    Int32,
-    (EVPCipherContext,),
-    evp_cipher_ctx)
-
-function Base.getproperty(evp_cipher_ctx::EVPCipherContext, name::Symbol)
-    if name === :block_size
-        return get_block_size(evp_cipher_ctx)
-    elseif name === :key_length
-        return get_key_length(evp_cipher_ctx)
-    elseif name === :init_vector_length
-        return get_init_vector_length(evp_cipher_ctx)
-    else
-        # fallback to getfield
-        return getfield(evp_cipher_ctx, name)
-    end
-end
-
-"""
-    EVP Message Digest.
-"""
-mutable struct EVPDigest
-    evp_md::Ptr{Cvoid}
-end
-
-EVPMDNull()::EVPDigest = EVPDigest(ccall((:EVP_md_null, libcrypto), Ptr{Cvoid}, ()))
-
-EVPMD2()::EVPDigest = EVPDigest(ccall((:EVP_md2, libcrypto), Ptr{Cvoid}, ()))
-
-EVPMD5()::EVPDigest = EVPDigest(ccall((:EVP_md5, libcrypto), Ptr{Cvoid}, ()))
-
-EVPSHA1()::EVPDigest = EVPDigest(ccall((:EVP_sha1, libcrypto), Ptr{Cvoid}, ()))
-
-EVPSHA224()::EVPDigest = EVPDigest(ccall((:EVP_sha224, libcrypto), Ptr{Cvoid}, ()))
-
-EVPSHA256()::EVPDigest = EVPDigest(ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, ()))
-
-EVPSHA384()::EVPDigest = EVPDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, ()))
-
-EVPSHA512()::EVPDigest = EVPDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
-
-EVPDSS1()::EVPDigest = EVPDigest(ccall((:EVP_dss1, libcrypto), Ptr{Cvoid}, ()))
-
-"""
-    EVP Message Digest Context.
-"""
-mutable struct EVPDigestContext
-    evp_md_ctx::Ptr{Cvoid}
-
-    function EVPDigestContext()
-        evp_digest_ctx = ccall(
-            (:EVP_MD_CTX_new, libcrypto),
-            Ptr{Cvoid},
-            ())
-        if evp_digest_ctx == C_NULL
-            throw(OpenSSLError())
-        end
-
-        evp_digest_ctx = new(evp_digest_ctx)
-        finalizer(free, evp_digest_ctx)
-
-        return evp_digest_ctx
-    end
-end
-
-function free(evp_digest_ctx::EVPDigestContext)
-    ccall(
-        (:EVP_MD_CTX_free, libcrypto),
-        Cvoid,
-        (EVPDigestContext,),
-        evp_digest_ctx)
-
-    evp_digest_ctx.evp_md_ctx = C_NULL
-    return nothing
-end
-
-function digest_init(evp_digest_ctx::EVPDigestContext, evp_digest::EVPDigest)
     if ccall(
-        (:EVP_DigestInit_ex, libcrypto),
+        (:DSA_generate_parameters_ex, libcrypto),
         Cint,
-        (EVPDigestContext, EVPDigest, Ptr{Cvoid}),
-        evp_digest_ctx,
-        evp_digest,
+        (DSA, Cint, Ptr{UInt8}, Cint, Ptr{Cint}, Ptr{Culong}, Ptr{Cvoid}),
+        dsa,
+        bits,
+        C_NULL,
+        1,
+        C_NULL,
+        C_NULL,
         C_NULL) != 1
         throw(OpenSSLError())
     end
-end
 
-function digest_update(evp_digest_ctx::EVPDigestContext, in_data::Vector{UInt8})
-    GC.@preserve in_data begin
-        if ccall(
-            (:EVP_DigestUpdate, libcrypto),
-            Cint,
-            (EVPDigestContext, Ptr{UInt8}, Csize_t),
-            evp_digest_ctx,
-            pointer(in_data),
-            length(in_data)) != 1
-            throw(OpenSSLError())
-        end
-    end
-end
-
-function digest_final(evp_digest_ctx::EVPDigestContext)::Vector{UInt8}
-    out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
-    out_length = Ref{UInt32}(0)
-
-    GC.@preserve out_data out_length begin
-        if ccall(
-            (:EVP_DigestFinal_ex, libcrypto),
-            Cint,
-            (EVPDigestContext, Ptr{UInt8}, Ptr{UInt32}),
-            evp_digest_ctx,
-            pointer(out_data),
-            pointer_from_objref(out_length)) != 1
-            throw(OpenSSLError())
-        end
-    end
-
-    resize!(out_data, out_length.x)
-
-    return out_data
-end
-
-"""
-    Computes the message digest (hash).
-"""
-function digest(evp_digest::EVPDigest, io::IO)
-    md_ctx = EVPDigestContext()
-
-    digest_init(md_ctx, evp_digest)
-
-    while !eof(io)
-        available_bytes = bytesavailable(io)
-        in_data = read(io, available_bytes)
-        digest_update(md_ctx, in_data)
-    end
-
-    result = digest_final(md_ctx)
-
-    finalize(md_ctx)
-
-    return result
+    return dsa
 end
 
 """
@@ -1209,9 +1193,18 @@ end
 """
     Creates a memory BIO method.
 """
-function BIOMethod_mem()::BIOMethod
+function BIOMethodMemory()::BIOMethod
     bio_method = ccall(
         (:BIO_s_mem, libcrypto),
+        Ptr{Cvoid},
+        ())
+
+    return BIOMethod(bio_method)
+end
+
+function BIOMethodSecureMemory()::BIOMethod
+    bio_method = ccall(
+        (:BIO_s_secmem, libcrypto),
         Ptr{Cvoid},
         ())
 
@@ -1531,6 +1524,116 @@ Dates.adjust(asn1_time::Asn1Time, days::Day) = adjust(asn1_time, Second(days))
 Dates.adjust(asn1_time::Asn1Time, years::Year) = adjust(asn1_time, Day(365 * years.value))
 
 """
+    EVP_PKEY, EVP Public Key interface.
+"""
+mutable struct EvpPKey
+    evp_pkey::Ptr{Cvoid}
+
+    function EvpPKey(evp_pkey::Ptr{Cvoid})::EvpPKey
+        evp_pkey = new(evp_pkey)
+        finalizer(free, evp_pkey)
+
+        return evp_pkey
+    end
+
+    function EvpPKey()::EvpPKey
+        evp_pkey = ccall(
+            (:EVP_PKEY_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if evp_pkey == C_NULL
+            throw(OpenSSLError())
+        end
+
+        return EvpPKey(evp_pkey)
+    end
+
+    function EvpPKey(rsa::RSA)::EvpPKey
+        evp_pkey = EvpPKey()
+
+        if ccall(
+            (:EVP_PKEY_assign, libcrypto),
+            Cint, (EvpPKey, Cint, RSA),
+            evp_pkey,
+            EVP_PKEY_RSA,
+            rsa) != 1
+            throw(OpenSSLError())
+        end
+
+        rsa.rsa = C_NULL
+        return evp_pkey
+    end
+
+    function EvpPKey(dsa::DSA)::EvpPKey
+        evp_pkey = EvpPKey()
+
+        if ccall(
+            (:EVP_PKEY_assign, libcrypto),
+            Cint, (EvpPKey, Cint, DSA),
+            evp_pkey,
+            EVP_PKEY_DSA,
+            dsa) != 1
+            throw(OpenSSLError())
+        end
+
+        dsa.dsa = C_NULL
+        return evp_pkey
+    end
+end
+
+function free(evp_pkey::EvpPKey)
+    ccall(
+        (:EVP_PKEY_free, libcrypto),
+        Cvoid,
+        (EvpPKey,),
+        evp_pkey)
+
+    evp_pkey.evp_pkey = C_NULL
+    return nothing
+end
+
+function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
+    bio_stream = OpenSSL.BIOStream(io)
+
+    GC.@preserve bio_stream begin
+        bio_stream_set_data(bio_stream)
+
+        if ccall(
+            (:PEM_write_bio_PrivateKey, libcrypto),
+            Cint,
+            (BIO, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
+            bio_stream.bio,
+            evp_pkey,
+            evp_cipher,
+            C_NULL,
+            0,
+            0,
+            C_NULL) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function get_key_type(evp_pkey::EvpPKey)::EvpPKeyType
+    pkey_type = ccall(
+        (:EVP_PKEY_base_id, libcrypto),
+        EvpPKeyType,
+        (EvpPKey,),
+        evp_pkey)
+
+    return pkey_type
+end
+
+function Base.getproperty(evp_pkey::EvpPKey, name::Symbol)
+    if name === :key_type
+        return get_key_type(evp_pkey)
+    else
+        # fallback to getfield
+        return getfield(evp_pkey, name)
+    end
+end
+
+"""
     Stack Of.
 """
 mutable struct StackOf{T}
@@ -1766,7 +1869,7 @@ mutable struct X509Certificate
     """
     function X509Certificate(in_string::AbstractString)::X509Certificate
         # Create a BIO and write the PEM string.
-        bio = BIO(BIOMethod_mem())
+        bio = BIO(BIOMethodMemory())
         unsafe_write(bio, pointer(in_string), length(in_string))
 
         x509 = ccall(
@@ -2953,7 +3056,7 @@ struct BIOStreamCallbacks
 end
 
 function Base.String(big_num::BigNum)
-    bio = BIO(BIOMethod_mem())
+    bio = BIO(BIOMethodMemory())
 
     write(bio, "0x")
 
@@ -2978,7 +3081,7 @@ function Base.String(asn1_time::Asn1Time)
         return "C_NULL"
     end
 
-    bio = BIO(BIOMethod_mem())
+    bio = BIO(BIOMethodMemory())
 
     if ccall(
         (:ASN1_TIME_print, libcrypto),
@@ -3006,8 +3109,7 @@ issuer_name: $(x509_cert.issuer_name)
 time_not_before: $(x509_cert.time_not_before)
 time_not_after: $(x509_cert.time_not_after)""")
 
-    seek(io, 0)
-    return String(read(io))
+    return String(take!(io))
 end
 
 function Base.String(x509_ext::X509Extension)
@@ -3017,7 +3119,7 @@ function Base.String(x509_ext::X509Extension)
 
     io = IOBuffer()
 
-    bio = BIO(BIOMethod_mem())
+    bio = BIO(BIOMethodMemory())
 
     _ = ccall(
         (:X509V3_EXT_print, libcrypto),
@@ -3027,7 +3129,6 @@ function Base.String(x509_ext::X509Extension)
         x509_ext,
         0,
         C_NULL)
-
     update_tls_error_state()
 
     result = String(bio_get_mem_data(bio))
@@ -3042,14 +3143,13 @@ function Base.String(x509_cert::X509Request)
 
     println(io, """subject_name: $(x509_cert.subject_name)""")
 
-    seek(io, 0)
-    return String(read(io))
+    return String(take!(io))
 end
 
 function Base.String(evp_pkey::EvpPKey)
     io = IOBuffer()
 
-    bio = BIO(BIOMethod_mem())
+    bio = BIO(BIOMethodMemory())
 
     _ = ccall(
         (:EVP_PKEY_print_public, libcrypto),
@@ -3106,7 +3206,7 @@ Base.show(io::IO, evp_pkey::EvpPKey) = write(io, String(evp_pkey))
 """
 function get_error()::String
     # Create memory BIO
-    bio = BIO(BIOMethod_mem())
+    bio = BIO(BIOMethodMemory())
 
     local error_msg::String
 

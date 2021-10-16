@@ -226,7 +226,7 @@ end
 end
 
 @testset "Hash" begin
-    res = digest(EVPMD5(), IOBuffer("The quick brown fox jumps over the lazy dog"))
+    res = digest(EvpMD5(), IOBuffer("The quick brown fox jumps over the lazy dog"))
     @test res == UInt8[0x9e, 0x10, 0x7d, 0x9d, 0x37, 0x2b, 0xb6, 0x82, 0x6b, 0xd8, 0x1d, 0x35, 0x42, 0xa4, 0x19, 0xd6]
 end
 
@@ -356,7 +356,11 @@ end
 
     # Make direct invalid call to OpenSSL
     invalid_cipher_suites = "TLS_AES_356_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"
-    result = ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (OpenSSL.SSLContext, Cstring), ssl_ctx,
+    result = ccall(
+        (:SSL_CTX_set_ciphersuites, libssl),
+        Cint,
+        (OpenSSL.SSLContext, Cstring),
+        ssl_ctx,
         invalid_cipher_suites)
 
     # Verify the error message.
@@ -368,7 +372,11 @@ end
     @test err_msg == ""
 
     # Make invalid OpenSSL (with fail and OpenSSL updates internal error queue).
-    result = ccall((:SSL_CTX_set_ciphersuites, libssl), Cint, (OpenSSL.SSLContext, Cstring), ssl_ctx,
+    result = ccall(
+        (:SSL_CTX_set_ciphersuites, libssl),
+        Cint,
+        (OpenSSL.SSLContext, Cstring),
+        ssl_ctx,
         invalid_cipher_suites)
     # Copy and clear OpenSSL error queue to task TLS.
     OpenSSL.update_tls_error_state()
@@ -493,22 +501,23 @@ end
     sym_key = random_bytes(OpenSSL.EVP_MAX_KEY_LENGTH)
     init_vec = random_bytes(OpenSSL.EVP_MAX_IV_LENGTH)
 
-    enc_evp_cipher_ctx = EVPCipherContext()
-    encrypt_init(enc_evp_cipher_ctx, EVPBlowFishCBC(), sym_key, init_vec)
+    enc_evp_cipher_ctx = EvpCipherContext()
+    encrypt_init(enc_evp_cipher_ctx, EvpBlowFishCBC(), sym_key, init_vec)
 
-    dec_evp_cipher_ctx = EVPCipherContext()
-    decrypt_init(dec_evp_cipher_ctx, EVPBlowFishCBC(), sym_key, init_vec)
+    dec_evp_cipher_ctx = EvpCipherContext()
+    decrypt_init(dec_evp_cipher_ctx, EvpBlowFishCBC(), sym_key, init_vec)
 
     in_data = IOBuffer("ala ma kota 4i4pi34i45434341234567890abcd_")
     enc_data = IOBuffer()
 
     cipher(enc_evp_cipher_ctx, in_data, enc_data)
+    seek(enc_data, 0)
     @show String(read(enc_data))
     seek(enc_data, 0)
 
     dec_data = IOBuffer()
     cipher(dec_evp_cipher_ctx, enc_data, dec_data)
-    @show String(read(dec_data))
+    @show String(take!(dec_data))
     seek(dec_data, 0)
 
     @test 1 == 1
@@ -549,4 +558,21 @@ end
     finalize(ext_3)
 
     finalize(st)
+end
+
+@testset "SerializePrivateKey" begin
+    evp_pkey = EvpPKey(rsa_generate_key())
+
+    io = IOBuffer()
+    write(io, evp_pkey)
+
+    seek(io, 0)
+    pem = String(read(io))
+    @show pem
+
+    free(evp_pkey)
+end
+
+@testset "DSA" begin
+    dsa = dsa_generate_key()
 end
