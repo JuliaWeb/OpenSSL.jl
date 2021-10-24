@@ -1,10 +1,11 @@
 using Dates
+using MozillaCACerts_jll
 using OpenSSL
 using OpenSSL_jll
 using Sockets
 using Test
 
-using MozillaCACerts_jll
+include("http_helpers.jl")
 
 macro catch_exception_object(code)
     quote
@@ -77,6 +78,23 @@ end
     OpenSSL.adjust(asn1_time, Dates.Year(2))
 
     @show asn1_time
+end
+
+@testset "X509Name" begin
+    x509_name_1 = X509Name()
+    add_entry(x509_name_1, "C", "US")
+    add_entry(x509_name_1, "ST", "Isles of Redmond")
+    add_entry(x509_name_1, "CN", "www.redmond.com")
+
+    x509_name_2 = X509Name()
+    add_entry(x509_name_2, "C", "US")
+    @test x509_name_1 != x509_name_2
+
+    add_entry(x509_name_2, "ST", "Isles of Redmond")
+    @test x509_name_1 != x509_name_2
+
+    add_entry(x509_name_2, "CN", "www.redmond.com")
+    @test x509_name_1 == x509_name_2
 end
 
 @testset "ReadPEMCert" begin
@@ -390,87 +408,6 @@ end
     free(ssl_ctx)
 end
 
-function test_server()
-    x509_certificate = X509Certificate()
-
-    evp_pkey = EvpPKey(rsa_generate_key())
-    x509_certificate.public_key = evp_pkey
-
-    x509_name = X509Name()
-    add_entry(x509_name, "C", "US")
-    add_entry(x509_name, "ST", "Isles of Redmond")
-    add_entry(x509_name, "CN", "www.redmond.com")
-
-    adjust(x509_certificate.time_not_before, Second(0))
-    adjust(x509_certificate.time_not_after, Year(1))
-
-    x509_certificate.subject_name = x509_name
-    x509_certificate.issuer_name = x509_name
-
-    sign_certificate(x509_certificate, evp_pkey)
-
-    server_socket = listen(5000)
-    accepted_socket = accept(server_socket)
-
-    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ServerMethod())
-    result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
-    @show result
-    result = OpenSSL.ssl_set_ciphersuites(ssl_ctx,
-        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
-    @show result
-
-    result = OpenSSL.ssl_use_certificate(ssl_ctx, x509_certificate)
-    @show result
-
-    result = OpenSSL.ssl_use_private_key(ssl_ctx, evp_pkey)
-    @show result
-
-    ssl_stream = SSLStream(ssl_ctx, accepted_socket, accepted_socket)
-    @show ssl_stream
-
-    OpenSSL.accept(ssl_stream)
-
-    eof(ssl_stream)
-    av = bytesavailable(ssl_stream)
-    request = read(ssl_stream, av)
-    reply = "reply: $(String(request))"
-
-    write(ssl_stream, reply)
-
-    close(ssl_stream)
-    finalize(ssl_ctx)
-    return nothing
-end
-
-function test_client()
-    tcp_stream = connect(5000)
-
-    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ClientMethod())
-    result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
-
-    # Create SSL stream.
-    ssl_stream = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
-
-    #TODO expose connect
-    OpenSSL.connect(ssl_stream)
-
-    x509_server_cert = OpenSSL.get_peer_certificate(ssl_stream)
-
-    @test String(x509_server_cert.issuer_name) == "/C=US/ST=Isles of Redmond/CN=www.redmond.com"
-    @test String(x509_server_cert.subject_name) == "/C=US/ST=Isles of Redmond/CN=www.redmond.com"
-
-    request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
-
-    written = unsafe_write(ssl_stream, pointer(request_str), length(request_str))
-
-    response = read(ssl_stream)
-    @show String(response)
-
-    close(ssl_stream)
-    finalize(ssl_ctx)
-    return nothing
-end
-
 @testset "PKCS12" begin
     x509_certificate = X509Certificate()
 
@@ -492,9 +429,12 @@ end
 
     p12_object = P12Object(evp_pkey, x509_certificate)
 
-    #open("file.p12", "a") do io
-    #    write(io, p12_object)
-    #end
+    _evp_key, _x509_certificate, _x509_ca_stack = unpack(p12_object)
+
+    @assert _evp_key.key_type == evp_pkey.key_type
+
+    @assert _x509_certificate.subject_name == x509_certificate.subject_name
+    @assert _x509_certificate.issuer_name == x509_certificate.issuer_name
 end
 
 @testset "Encrypt" begin
@@ -575,4 +515,12 @@ end
 
 @testset "DSA" begin
     dsa = dsa_generate_key()
+end
+
+@testset "SSLServer" begin
+    f1 = @async test_server()
+    f2 = @async test_client()
+
+    fetch(f2)
+    fetch(f1)
 end

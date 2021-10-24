@@ -246,8 +246,8 @@ const BIO_TYPE_SOURCE_SINK = 0x0400
     SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION = 0x00040000
     # Disable encrypt-then-mac
     SSL_OP_NO_ENCRYPT_THEN_MAC = 0x00080000
-    # Enable TLSv1.3 Compatibility mode. This is on by default. A future version
-    # of OpenSSL may have this disabled by default.
+    # Enable TLSv1.3 Compatibility mode. This is on by default.
+    # A future version of OpenSSL may have this disabled by default.
     SSL_OP_ENABLE_MIDDLEBOX_COMPAT = 0x00100000
     # Prioritize Chacha20Poly1305 when client does.
     # Modifies SSL_OP_CIPHER_SERVER_PREFERENCE
@@ -273,6 +273,7 @@ const BIO_TYPE_SOURCE_SINK = 0x0400
     # with CryptoPro CSP 3.x
     SSL_OP_CRYPTOPRO_TLSEXT_BUG = 0x80000000
 end
+
 const SSL_OP_NO_DTLSv1 = SSL_OP_NO_TLSv1
 const SSL_OP_NO_DTLSv1_2 = SSL_OP_NO_TLSv1_2
 const SSL_OP_NO_SSL_MASK = SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3
@@ -284,8 +285,11 @@ const SSL_OP_NO_DTLS_MASK = SSL_OP_NO_DTLSv1 | SSL_OP_NO_DTLSv1_2
     # This used to be 0x80000BFFU before 1.1.1.
 """
 const SSL_OP_ALL =
-    SSL_OP_CRYPTOPRO_TLSEXT_BUG | SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS | SSL_OP_LEGACY_SERVER_CONNECT |
-    SSL_OP_TLSEXT_PADDING | SSL_OP_SAFARI_ECDHE_ECDSA_BUG
+    SSL_OP_CRYPTOPRO_TLSEXT_BUG |
+    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS |
+    SSL_OP_LEGACY_SERVER_CONNECT |
+    SSL_OP_TLSEXT_PADDING |
+    SSL_OP_SAFARI_ECDHE_ECDSA_BUG
 
 """
     OpenSSL init settings.
@@ -314,6 +318,15 @@ const SSL_OP_ALL =
 end
 
 const OPENSSL_INIT_SSL_DEFAULT = OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS
+
+"""
+    TlsVersion.
+"""
+@enum(TlsVersion::Clong,
+    TLS1_VERSION = 0x0301,
+    TLS1_1_VERSION = 0x0302,
+    TLS1_2_VERSION = 0x0303,
+    TLS1_3_VERSION = 0x0304)
 
 #
 const MBSTRING_FLAG = 0x1000
@@ -410,6 +423,20 @@ const RSA_F4 = 0x10001
     OPENSSL_MODULES_DIR = 8,
     # The current OpenSSL cpu settings
     OPENSSL_CPU_INFO = 9)
+
+@enum(SSLControlCommand::Cint,
+    SSL_CTRL_SET_MIN_PROTO_VERSION = 123,
+    SSL_CTRL_SET_MAX_PROTO_VERSION = 124,
+    SSL_CTRL_SET_SPLIT_SEND_FRAGMENT = 125,
+    SSL_CTRL_SET_MAX_PIPELINES = 126,
+    SSL_CTRL_GET_TLSEXT_STATUS_REQ_TYPE = 127,
+    SSL_CTRL_GET_TLSEXT_STATUS_REQ_CB = 128,
+    SSL_CTRL_GET_TLSEXT_STATUS_REQ_CB_ARG = 129,
+    SSL_CTRL_GET_MIN_PROTO_VERSION = 130,
+    SSL_CTRL_GET_MAX_PROTO_VERSION = 131,
+    SSL_CTRL_GET_SIGNATURE_NID = 132,
+    SSL_CTRL_GET_TMP_KEY = 133,
+    SSL_CTRL_GET_NEGOTIATED_GROUP = 134)
 
 """
     OpenSSL error.
@@ -778,8 +805,6 @@ function cipher_update(evp_cipher_ctx::EvpCipherContext, in_data::Vector{UInt8})
             throw(OpenSSLError())
         end
     end
-
-    @show out_length.x
 
     resize!(out_data, out_length.x)
 
@@ -1742,6 +1767,21 @@ function free(x509_name::X509Name)
     return nothing
 end
 
+function Base.:(==)(x509_name_1::X509Name, x509_name_2::X509Name)
+    result = ccall(
+        (:X509_NAME_cmp, libcrypto),
+        Cint,
+        (X509Name, X509Name),
+        x509_name_1,
+        x509_name_2)
+
+    if result == -2
+        throw(OpenSSLError())
+    end
+
+    return result == 0
+end
+
 """
     X509Name to string.
 """
@@ -1751,7 +1791,11 @@ function Base.String(x509_name::X509Name)::String
         Cstring,
         (X509Name, Ptr{UInt8}, Cint),
         x509_name,
-        C_NULL, 0)
+        C_NULL,
+        0)
+    if name_ptr == C_NULL
+        throw(OpenSSLError())
+    end
 
     str = unsafe_string(name_ptr)
 
@@ -2480,7 +2524,7 @@ end
 function unpack(p12_object::P12Object)
     evp_pkey::EvpPKey = EvpPKey(C_NULL)
     x509_cert::X509Certificate = X509Certificate(C_NULL)
-    x509_stack::StackOf{X509Certificate} = StackOf{X509Certificate}(C_NULL)
+    x509_ca_stack::StackOf{X509Certificate} = StackOf{X509Certificate}(C_NULL)
 
     if ccall(
         (:PKCS12_parse, libcrypto),
@@ -2490,11 +2534,11 @@ function unpack(p12_object::P12Object)
         C_NULL,
         evp_pkey,
         x509_cert,
-        x509_stack) != 1
+        x509_ca_stack) != 1
         throw(OpenSSLError())
     end
 
-    return evp_pkey, x509_cert, x509_stack
+    return evp_pkey, x509_cert, x509_ca_stack
 end
 
 """
@@ -2587,6 +2631,22 @@ function ssl_set_alpn(ssl_context::SSLContext, protocol_list::String)
         ssl_context,
         pointer(protocol_list),
         length(protocol_list)) != 0
+        throw(OpenSSLError())
+    end
+end
+
+"""
+    Sets minimum supported protocol version for SSLContext.
+"""
+function ssl_set_min_protocol_version(ssl_context::SSLContext, version::TlsVersion)
+    if ccall(
+        (:SSL_CTX_ctrl, libssl),
+        Cint,
+        (SSLContext, SSLControlCommand, TlsVersion, Ptr{Cvoid}),
+        ssl_context,
+        SSL_CTRL_SET_MIN_PROTO_VERSION,
+        version,
+        C_NULL) != 1
         throw(OpenSSLError())
     end
 end
@@ -2779,7 +2839,7 @@ function force_read_buffer(ssl_stream::SSLStream)
         bio_stream_set_data(bio_read_stream)
         bio_stream_set_data(bio_write_stream)
 
-        has_pending = ccall(
+        _ = ccall(
             (:SSL_has_pending, libssl),
             Cint,
             (SSL,),
