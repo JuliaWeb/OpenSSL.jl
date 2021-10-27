@@ -1,3 +1,7 @@
+using Dates
+using OpenSSL
+using Sockets
+
 function test_server()
     x509_certificate = X509Certificate()
 
@@ -36,7 +40,10 @@ function test_server()
     request = read(ssl_stream, bytes_available)
     reply = "reply: $(String(request))"
 
-    #TODO check available bytes
+    # eof(ssl_stream) will block
+
+    # Verify the are no more bytes available in the stream.
+    @test bytesavailable(ssl_stream) == 0
 
     write(ssl_stream, reply)
 

@@ -6,14 +6,16 @@ using OpenSSL_jll
 using Sockets
 
 """
-    [ ] Encryption, decryption
-    [ ] X509 extension
+    [x] Encryption, decryption
+    [x] X509 extension
     [x] Free BIO
     [x] Free BIOMethod
     [x] Free on BIOStream
     [x] Close SSLContext
     [x] BIOStream method (callbacks)
     [x] Store the SSLContext (part of SSLStream)
+    [ ] DSA certificates
+    [ ] encryption/decryption set key length
 
 Error handling:
     OpenSSL keeps the error messages in the thread TLS.
@@ -23,12 +25,12 @@ Error handling:
 
 export TLSv12ClientMethod, TLSv12ServerMethod,
     SSLStream, BigNum, EvpPKey, RSA, DSA, Asn1Time, X509Name, StackOf, X509Certificate,
-    X509Request, X509Store, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
+    X509Request, X509Store, X509Attribute, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
     EvpEncNull, EvpBlowFishCBC, EVPBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
     EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
-    encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update,
-    digest_final, digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request,
-    adjust, add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
+    encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final,
+    digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
+    add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
     get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
 const Option{T} = Union{Nothing,T} where {T}
@@ -509,17 +511,23 @@ end
 mutable struct BigNum
     bn::Ptr{Cvoid}
 
+    function BigNum(bn::Ptr{Cvoid})
+        big_num = new(bn)
+        finalizer(free, big_num)
+
+        return big_num
+    end
+
     function BigNum()
-        big_num = ccall(
+        bn = ccall(
             (:BN_new, libcrypto),
             Ptr{Cvoid},
             ())
-        if big_num == C_NULL
+        if bn == C_NULL
             throw(OpenSSLError())
         end
 
-        big_num = new(big_num)
-        finalizer(free, big_num)
+        big_num = BigNum(bn)
 
         return big_num
     end
@@ -551,6 +559,37 @@ function free(big_num::BigNum)
 
     big_num.bn = C_NULL
     return nothing
+end
+
+function Base.:(==)(big_num_1::BigNum, big_num_2::BigNum)
+    result = ccall(
+        (:BN_cmp, libcrypto),
+        Cint,
+        (BigNum, BigNum),
+        big_num_1,
+        big_num_2)
+
+    if result == -2
+        throw(OpenSSLError())
+    end
+
+    return result == 0
+end
+
+"""
+    BigNum does not support up ref. Duplicate the big number instead.
+"""
+function up_ref(big_num::BigNum)::Ptr{Cvoid}
+    big_num = ccall(
+        (:BN_dup, libcrypto),
+        Ptr{Cvoid},
+        (BigNum,),
+        big_num)
+    if big_num == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return big_num
 end
 
 function Base.:+(a::BigNum, b::BigNum)::BigNum
@@ -1604,6 +1643,31 @@ mutable struct EvpPKey
         dsa.dsa = C_NULL
         return evp_pkey
     end
+
+    """
+        Creates a EvpPKey from PEM string.
+    """
+    function EvpPKey(in_string::AbstractString)::EvpPKey
+        # Create a BIO and write the PEM string.
+        bio = BIO(BIOMethodMemory())
+        unsafe_write(bio, pointer(in_string), length(in_string))
+
+        evp_pkey = ccall(
+            (:PEM_read_bio_PrivateKey, libcrypto),
+            Ptr{Cvoid},
+            (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            bio,
+            C_NULL,
+            C_NULL,
+            C_NULL)
+        if evp_pkey == C_NULL
+            throw(OpenSSLError())
+        end
+
+        free(bio)
+
+        return EvpPKey(evp_pkey)
+    end
 end
 
 function free(evp_pkey::EvpPKey)
@@ -1615,6 +1679,21 @@ function free(evp_pkey::EvpPKey)
 
     evp_pkey.evp_pkey = C_NULL
     return nothing
+end
+
+function Base.:(==)(evp_pkey_1::EvpPKey, evp_pkey_2::EvpPKey)
+    result = ccall(
+        (:EVP_PKEY_cmp, libcrypto),
+        Cint,
+        (EvpPKey, EvpPKey),
+        evp_pkey_1,
+        evp_pkey_2)
+
+    if result == -2
+        throw(OpenSSLError())
+    end
+
+    return result == 1
 end
 
 function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
@@ -1695,7 +1774,7 @@ function free(stack_of::StackOf{T}) where {T}
     return nothing
 end
 
-function push(stack_of::StackOf{T}, element::T) where {T}
+function Base.push!(stack_of::StackOf{T}, element::T) where {T}
     count = ccall(
         (:OPENSSL_sk_push, libcrypto),
         Cint,
@@ -1710,7 +1789,7 @@ function push(stack_of::StackOf{T}, element::T) where {T}
     return count
 end
 
-function pop(stack_of::StackOf{T}) where {T}
+function Base.pop!(stack_of::StackOf{T}) where {T}
     ptr = ccall(
         (:OPENSSL_sk_pop, libcrypto),
         Ptr{Cvoid},
@@ -1824,6 +1903,61 @@ function add_entry(x509_name::X509Name, field::String, value::String)
     end
 
     return nothing
+end
+
+"""
+    X509 Attribute.
+"""
+mutable struct X509Attribute
+    x509_attr::Ptr{Cvoid}
+
+    function X509Attribute(x509_attr::Ptr{Cvoid})
+        x509_attr = new(x509_attr)
+        finalizer(free, x509_attr)
+
+        return x509_attr
+    end
+
+    function X509Attribute()
+        x509_attr = ccall(
+            (:X509_ATTRIBUTE_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if x509_attr == C_NULL
+            throw(OpenSSLError())
+        end
+
+        x509_attr = X509Attribute(x509_attr)
+
+        return x509_attr
+    end
+end
+
+function free(x509_attr::X509Attribute)
+    ccall(
+        (:X509_ATTRIBUTE_free, libcrypto),
+        Cvoid,
+        (X509Attribute,),
+        x509_attr)
+
+    x509_attr.x509_attr = C_NULL
+    return nothing
+end
+
+"""
+    X509Attribute does not support up ref. Duplicate the attribute instead.
+"""
+function up_ref(x509_attr::X509Attribute)::Ptr{Cvoid}
+    x509_attr = ccall(
+        (:X509_ATTRIBUTE_dup, libcrypto),
+        Ptr{Cvoid},
+        (X509Attribute,),
+        x509_attr)
+    if x509_attr == C_NULL
+        throw(OpenSSLError())
+    end
+
+    return x509_attr
 end
 
 """
@@ -1953,6 +2087,21 @@ function up_ref(x509_cert::X509Certificate)::Ptr{Cvoid}
         x509_cert)
 
     return x509_cert.x509
+end
+
+function Base.:(==)(x509_cert_1::X509Certificate, x509_cert_2::X509Certificate)
+    result = ccall(
+        (:X509_cmp, libcrypto),
+        Cint,
+        (X509Certificate, X509Certificate),
+        x509_cert_1,
+        x509_cert_2)
+
+    if result == -2
+        throw(OpenSSLError())
+    end
+
+    return result == 0
 end
 
 function Base.write(io::IO, x509_cert::X509Certificate)
@@ -2913,12 +3062,13 @@ end
 """
     Read from the SSL stream.
 """
-function Base.read(ssl_stream::SSLStream, in_length::Int32)::Vector{UInt8}
-    return read(ssl_stream)
-end
+Base.read(ssl_stream::SSLStream, in_length::Int32)::Vector{UInt8} = read(ssl_stream)
 
 function Base.read(ssl_stream::SSLStream)::Vector{UInt8}
     lock(ssl_stream.lock) do
+        # Force first read, that will update the pending bytes.
+        force_read_buffer(ssl_stream)
+
         bio_read_stream = ssl_stream.bio_read_stream
         bio_write_stream = ssl_stream.bio_write_stream
 
@@ -2926,10 +3076,7 @@ function Base.read(ssl_stream::SSLStream)::Vector{UInt8}
             bio_stream_set_data(bio_read_stream)
             bio_stream_set_data(bio_write_stream)
 
-            # Force first read, that will update the pending bytes.
-            force_read_buffer(ssl_stream)
-
-            has_pending = ccall(
+            _ = ccall(
                 (:SSL_has_pending, libssl),
                 Cint,
                 (SSL,),
@@ -2967,8 +3114,6 @@ function Base.read(ssl_stream::SSLStream)::Vector{UInt8}
 end
 
 function Base.bytesavailable(ssl_stream::SSLStream)::Cint
-    force_read_buffer(ssl_stream)
-
     bio_read_stream = ssl_stream.bio_read_stream
     bio_write_stream = ssl_stream.bio_write_stream
 
@@ -2976,7 +3121,7 @@ function Base.bytesavailable(ssl_stream::SSLStream)::Cint
         bio_stream_set_data(bio_read_stream)
         bio_stream_set_data(bio_write_stream)
 
-        has_pending = ccall(
+        _ = ccall(
             (:SSL_has_pending, libssl),
             Cint,
             (SSL,),
@@ -2998,11 +3143,12 @@ function Base.eof(ssl_stream::SSLStream)::Bool
     bio_read_stream = ssl_stream.bio_read_stream
     bio_write_stream = ssl_stream.bio_write_stream
 
+    # Force first read, that will update the pending bytes.
+    force_read_buffer(ssl_stream)
+
     GC.@preserve bio_read_stream bio_write_stream begin
         bio_stream_set_data(bio_read_stream)
         bio_stream_set_data(bio_write_stream)
-
-        force_read_buffer(ssl_stream)
 
         has_pending = ccall(
             (:SSL_has_pending, libssl),

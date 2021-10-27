@@ -129,12 +129,27 @@ end
 
     foreach(2:length(certs_pem)) do i
         x509_cert = X509Certificate(certs_pem[i])
-        OpenSSL.push(x509_certificates, x509_cert)
+        push!(x509_certificates, x509_cert)
         finalize(x509_cert)
         nothing
     end
 
     free(x509_certificates)
+end
+
+@testset "StackOf{BigNum}" begin
+    n1 = BigNum(0x4)
+    n2 = BigNum(0x8)
+
+    big_nums = StackOf{BigNum}()
+    push!(big_nums, n1)
+    push!(big_nums, n2)
+
+    _n1 = pop!(big_nums)
+    _n2 = pop!(big_nums)
+
+    @test _n1 == n2
+    @test _n1 == n2
 end
 
 @testset "X509Store" begin
@@ -333,7 +348,7 @@ end
     x509_exts = StackOf{X509Extension}()
 
     ext = X509Extension("subjectAltName", "DNS:localhost")
-    OpenSSL.push(x509_exts, ext)
+    push!(x509_exts, ext)
     add_extensions(x509_request, x509_exts)
     finalize(ext)
 
@@ -351,7 +366,7 @@ end
 
     x509_exts = x509_request.extensions
 
-    ext = OpenSSL.pop(x509_exts)
+    ext = pop!(x509_exts)
 
     add_extension(x509_certificate, ext)
     add_extension(x509_certificate, X509Extension("keyUsage", "digitalSignature, nonRepudiation, keyEncipherment"))
@@ -429,12 +444,14 @@ end
 
     p12_object = P12Object(evp_pkey, x509_certificate)
 
-    _evp_key, _x509_certificate, _x509_ca_stack = unpack(p12_object)
+    _evp_pkey, _x509_certificate, _x509_ca_stack = unpack(p12_object)
 
-    @assert _evp_key.key_type == evp_pkey.key_type
+    @test _evp_pkey == evp_pkey
+    @test _evp_pkey.key_type == evp_pkey.key_type
 
-    @assert _x509_certificate.subject_name == x509_certificate.subject_name
-    @assert _x509_certificate.issuer_name == x509_certificate.issuer_name
+    @test _x509_certificate == x509_certificate
+    @test _x509_certificate.subject_name == x509_certificate.subject_name
+    @test _x509_certificate.issuer_name == x509_certificate.issuer_name
 end
 
 @testset "Encrypt" begin
@@ -447,7 +464,8 @@ end
     dec_evp_cipher_ctx = EvpCipherContext()
     decrypt_init(dec_evp_cipher_ctx, EvpBlowFishCBC(), sym_key, init_vec)
 
-    in_data = IOBuffer("ala ma kota 4i4pi34i45434341234567890abcd_")
+    in_string = "OpenSSL Julia"
+    in_data = IOBuffer(in_string)
     enc_data = IOBuffer()
 
     cipher(enc_evp_cipher_ctx, in_data, enc_data)
@@ -457,10 +475,10 @@ end
 
     dec_data = IOBuffer()
     cipher(dec_evp_cipher_ctx, enc_data, dec_data)
-    @show String(take!(dec_data))
-    seek(dec_data, 0)
+    out_data = take!(dec_data)
+    out_string = String(out_data)
 
-    @test 1 == 1
+    @test in_string == out_string
 end
 
 @testset "StackOf{X509Extension}" begin
@@ -469,9 +487,9 @@ end
     ext3 = X509Extension("basicConstraints", "CA:FALSE")
 
     st = StackOf{X509Extension}()
-    OpenSSL.push(st, ext1)
-    OpenSSL.push(st, ext2)
-    OpenSSL.push(st, ext3)
+    push!(st, ext1)
+    push!(st, ext2)
+    push!(st, ext3)
 
     @test String(ext1) == "DNS:openssl.jl.com"
     @test String(ext2) == "Digital Signature, Key Encipherment, Key Agreement"
@@ -483,9 +501,9 @@ end
 
     @test length(st) == 3
 
-    ext_1 = OpenSSL.pop(st)
-    ext_2 = OpenSSL.pop(st)
-    ext_3 = OpenSSL.pop(st)
+    ext_1 = pop!(st)
+    ext_2 = pop!(st)
+    ext_3 = pop!(st)
 
     @test length(st) == 0
 
@@ -506,15 +524,25 @@ end
     io = IOBuffer()
     write(io, evp_pkey)
 
-    seek(io, 0)
-    pem = String(read(io))
-    @show pem
+    pkey_pem = String(take!(io))
+
+    @test startswith(pkey_pem, "-----BEGIN PRIVATE KEY-----")
+
+    _evp_pkey = EvpPKey(pkey_pem)
+
+    @test _evp_pkey == evp_pkey
 
     free(evp_pkey)
+    free(_evp_pkey)
 end
 
 @testset "DSA" begin
     dsa = dsa_generate_key()
+end
+
+@testset "X509Attribute" begin
+    attr = X509Attribute()
+    free(attr)
 end
 
 @testset "SSLServer" begin
