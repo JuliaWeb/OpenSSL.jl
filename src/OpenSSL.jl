@@ -26,7 +26,7 @@ Error handling:
 export TLSv12ClientMethod, TLSv12ServerMethod,
     SSLStream, BigNum, EvpPKey, RSA, DSA, Asn1Time, X509Name, StackOf, X509Certificate,
     X509Request, X509Store, X509Attribute, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
-    EvpEncNull, EvpBlowFishCBC, EVPBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
+    EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
     EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
     encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final,
     digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
@@ -700,6 +700,37 @@ mutable struct EvpCipher
     evp_cipher::Ptr{Cvoid}
 end
 
+get_block_size(evp_cipher::EvpCipher)::Int32 = ccall(
+    (:EVP_CIPHER_block_size, libcrypto),
+    Int32,
+    (EvpCipher,),
+    evp_cipher)
+
+get_key_length(evp_cipher::EvpCipher)::Int32 = ccall(
+    (:EVP_CIPHER_key_length, libcrypto),
+    Int32,
+    (EvpCipher,),
+    evp_cipher)
+
+get_init_vector_length(evp_cipher::EvpCipher)::Int32 = ccall(
+    (:EVP_CIPHER_iv_length, libcrypto),
+    Int32,
+    (EvpCipher,),
+    evp_cipher)
+
+function Base.getproperty(evp_cipher::EvpCipher, name::Symbol)
+    if name === :block_size
+        return get_block_size(evp_cipher)
+    elseif name === :key_length
+        return get_key_length(evp_cipher)
+    elseif name === :init_vector_length
+        return get_init_vector_length(evp_cipher)
+    else
+        # fallback to getfield
+        return getfield(evp_cipher, name)
+    end
+end
+
 EvpEncNull()::EvpCipher = EvpCipher(ccall((:EVP_enc_null, libcrypto), Ptr{Cvoid}, ()))
 
 """
@@ -726,7 +757,7 @@ EvpBlowFishOFB()::EvpCipher = EvpCipher(ccall((:EVP_bf_ofb, libcrypto), Ptr{Cvoi
 """
 EvpAES128CBC()::EvpCipher = EvpCipher(ccall((:EVP_aes_128_cbc, libcrypto), Ptr{Cvoid}, ()))
 
-EvpAES128ECB()::EVPCipher = EvpCipher(ccall((:EVP_aes_128_ecb, libcrypto), Ptr{Cvoid}, ()))
+EvpAES128ECB()::EvpCipher = EvpCipher(ccall((:EVP_aes_128_ecb, libcrypto), Ptr{Cvoid}, ()))
 
 EvpAES128CFB()::EvpCipher = EvpCipher(ccall((:EVP_aes_128_cfb, libcrypto), Ptr{Cvoid}, ()))
 

@@ -455,30 +455,44 @@ end
 end
 
 @testset "Encrypt" begin
-    sym_key = random_bytes(OpenSSL.EVP_MAX_KEY_LENGTH)
-    init_vec = random_bytes(OpenSSL.EVP_MAX_IV_LENGTH)
+    evp_ciphers = [
+        EvpEncNull(),
+        EvpBlowFishCBC(),
+        EvpBlowFishECB(),
+        #EvpBlowFishCFB(),
+        EvpBlowFishOFB(),
+        EvpAES128CBC(),
+        EvpAES128ECB(),
+        #EvpAES128CFB(),
+        EvpAES128OFB(),
+    ]
 
-    enc_evp_cipher_ctx = EvpCipherContext()
-    encrypt_init(enc_evp_cipher_ctx, EvpBlowFishCBC(), sym_key, init_vec)
+    foreach(evp_ciphers) do evp_cipher
+        sym_key = random_bytes(evp_cipher.key_length)
+        init_vector = random_bytes(evp_cipher.init_vector_length)
 
-    dec_evp_cipher_ctx = EvpCipherContext()
-    decrypt_init(dec_evp_cipher_ctx, EvpBlowFishCBC(), sym_key, init_vec)
+        enc_evp_cipher_ctx = EvpCipherContext()
+        encrypt_init(enc_evp_cipher_ctx, evp_cipher, sym_key, init_vector)
 
-    in_string = "OpenSSL Julia"
-    in_data = IOBuffer(in_string)
-    enc_data = IOBuffer()
+        dec_evp_cipher_ctx = EvpCipherContext()
+        decrypt_init(dec_evp_cipher_ctx, evp_cipher, sym_key, init_vector)
 
-    cipher(enc_evp_cipher_ctx, in_data, enc_data)
-    seek(enc_data, 0)
-    @show String(read(enc_data))
-    seek(enc_data, 0)
+        in_string = "OpenSSL Julia"
+        in_data = IOBuffer(in_string)
+        enc_data = IOBuffer()
 
-    dec_data = IOBuffer()
-    cipher(dec_evp_cipher_ctx, enc_data, dec_data)
-    out_data = take!(dec_data)
-    out_string = String(out_data)
+        cipher(enc_evp_cipher_ctx, in_data, enc_data)
+        seek(enc_data, 0)
+        @show String(read(enc_data))
+        seek(enc_data, 0)
 
-    @test in_string == out_string
+        dec_data = IOBuffer()
+        cipher(dec_evp_cipher_ctx, enc_data, dec_data)
+        out_data = take!(dec_data)
+        out_string = String(out_data)
+
+        @test in_string == out_string
+    end
 end
 
 @testset "StackOf{X509Extension}" begin
