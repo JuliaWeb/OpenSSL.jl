@@ -807,28 +807,56 @@ function decrypt_init(
     evp_cipher::EvpCipher,
     symetric_key::Vector{UInt8},
     init_vector::Vector{UInt8})
-    # Initialize encryption context.
-    GC.@preserve symetric_key init_vector begin
-        if ccall(
-            (:EVP_DecryptInit_ex, libcrypto),
-            Cint,
-            (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
-            evp_cipher_ctx,
-            evp_cipher,
-            C_NULL,
-            pointer(symetric_key),
-            pointer(init_vector)) != 1
-            throw(OpenSSLError())
-        end
+    # Initialize decryption context.
 
-        #if ccall(
-        #    (:EVP_CIPHER_CTX_set_key_length, libcrypto),
-        #    Cint,
-        #    (EvpCipherContext, Cint),
-        #    evp_cipher_ctx,
-        #    length(sym_key)) != 1
-        #    throw(OpenSSLError())
-        #end
+    GC.@preserve symetric_key init_vector begin
+        if length(symetric_key) == get_key_length(evp_cipher)
+            # Use default key length.
+            if ccall(
+                (:EVP_DecryptInit_ex, libcrypto),
+                Cint,
+                (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+                evp_cipher_ctx,
+                evp_cipher,
+                C_NULL,
+                pointer(symetric_key),
+                pointer(init_vector)) != 1
+                throw(OpenSSLError())
+            end
+        else
+            if ccall(
+                (:EVP_DecryptInit_ex, libcrypto),
+                Cint,
+                (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+                evp_cipher_ctx,
+                evp_cipher,
+                C_NULL,
+                pointer(symetric_key),
+                pointer(init_vector)) != 1
+                throw(OpenSSLError())
+            end
+
+            if ccall(
+                (:EVP_CIPHER_CTX_set_key_length, libcrypto),
+                Cint,
+                (EvpCipherContext, Cint),
+                evp_cipher_ctx,
+                length(symetric_key)) != 1
+                throw(OpenSSLError())
+            end
+
+            if ccall(
+                (:EVP_DecryptInit_ex, libcrypto),
+                Cint,
+                (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+                evp_cipher_ctx,
+                evp_cipher,
+                C_NULL,
+                pointer(symetric_key),
+                pointer(init_vector)) != 1
+                throw(OpenSSLError())
+            end
+        end
     end
 end
 
@@ -838,17 +866,54 @@ function encrypt_init(
     symetric_key::Vector{UInt8},
     init_vector::Vector{UInt8})
     # Initialize encryption context.
+
     GC.@preserve symetric_key init_vector begin
-        if ccall(
-            (:EVP_EncryptInit_ex, libcrypto),
-            Cint,
-            (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
-            evp_cipher_ctx,
-            evp_cipher,
-            C_NULL,
-            pointer(symetric_key),
-            pointer(init_vector)) != 1
-            throw(OpenSSLError())
+        if length(symetric_key) == get_key_length(evp_cipher)
+            # Use default key length.
+            if ccall(
+                (:EVP_EncryptInit_ex, libcrypto),
+                Cint,
+                (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+                evp_cipher_ctx,
+                evp_cipher,
+                C_NULL,
+                pointer(symetric_key),
+                pointer(init_vector)) != 1
+                throw(OpenSSLError())
+            end
+        else
+            if ccall(
+                (:EVP_EncryptInit_ex, libcrypto),
+                Cint,
+                (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+                evp_cipher_ctx,
+                evp_cipher,
+                C_NULL,
+                pointer(symetric_key),
+                pointer(init_vector)) != 1
+                throw(OpenSSLError())
+            end
+
+            if ccall(
+                (:EVP_CIPHER_CTX_set_key_length, libcrypto),
+                Cint,
+                (EvpCipherContext, Cint),
+                evp_cipher_ctx,
+                length(symetric_key)) != 1
+                throw(OpenSSLError())
+            end
+
+            if ccall(
+                (:EVP_EncryptInit_ex, libcrypto),
+                Cint,
+                (EvpCipherContext, EvpCipher, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+                evp_cipher_ctx,
+                evp_cipher,
+                C_NULL,
+                pointer(symetric_key),
+                pointer(init_vector)) != 1
+                throw(OpenSSLError())
+            end
         end
     end
 end
