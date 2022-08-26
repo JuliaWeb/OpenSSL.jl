@@ -193,9 +193,13 @@ end
 
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
 
-    written = unsafe_write(ssl_stream, pointer(request_str), length(request_str))
+    written = write(ssl_stream, request_str)
 
-    response = read(ssl_stream)
+    io = IOBuffer()
+    while !eof(ssl_stream)
+        write(io, readavailable(ssl_stream))
+    end
+    response = String(take!(io))
 
     close(ssl_stream)
     finalize(ssl_ctx)
