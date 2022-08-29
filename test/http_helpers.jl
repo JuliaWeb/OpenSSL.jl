@@ -32,22 +32,22 @@ function test_server()
     OpenSSL.ssl_use_certificate(ssl_ctx, x509_certificate)
     OpenSSL.ssl_use_private_key(ssl_ctx, evp_pkey)
 
-    ssl_stream = SSLStream(ssl_ctx, accepted_socket, accepted_socket)
+    ssl = SSLStream(ssl_ctx, accepted_socket, accepted_socket)
 
-    OpenSSL.accept(ssl_stream)
+    OpenSSL.accept(ssl)
 
-    bytes_available = bytesavailable(ssl_stream)
-    request = read(ssl_stream, bytes_available)
+    bytes_available = bytesavailable(ssl)
+    request = read(ssl, bytes_available)
     reply = "reply: $(String(request))"
 
-    # eof(ssl_stream) will block
+    # eof(ssl) will block
 
     # Verify the are no more bytes available in the stream.
-    @test bytesavailable(ssl_stream) == 0
+    @test bytesavailable(ssl) == 0
 
-    write(ssl_stream, reply)
+    write(ssl, reply)
 
-    close(ssl_stream)
+    close(ssl)
     finalize(ssl_ctx)
     return nothing
 end
@@ -59,28 +59,28 @@ function test_client()
     ssl_options = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
     # Create SSL stream.
-    ssl_stream = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
 
     #TODO expose connect
-    OpenSSL.connect(ssl_stream)
+    OpenSSL.connect(ssl)
 
     # Verify the server certificate.
-    x509_server_cert = OpenSSL.get_peer_certificate(ssl_stream)
+    x509_server_cert = OpenSSL.get_peer_certificate(ssl)
 
     @test String(x509_server_cert.issuer_name) == "/C=US/ST=Isles of Redmond/CN=www.redmond.com"
     @test String(x509_server_cert.subject_name) == "/C=US/ST=Isles of Redmond/CN=www.redmond.com"
 
     request_str = "GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\nRequest_body."
 
-    written = unsafe_write(ssl_stream, pointer(request_str), length(request_str))
+    written = unsafe_write(ssl, pointer(request_str), length(request_str))
 
     @test length(request_str) == written
 
-    response_str = String(read(ssl_stream))
+    response_str = String(read(ssl))
 
     @test response_str == "reply: $request_str"
 
-    close(ssl_stream)
+    close(ssl)
     finalize(ssl_ctx)
     return nothing
 end

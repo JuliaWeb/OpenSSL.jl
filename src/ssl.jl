@@ -123,15 +123,15 @@ Base.close(bio_stream::BIOStream) = free(bio_stream.bio)
 
 """
     SSLMethod.
-    TLSv12ClientMethod.
+    TLSClientMethod.
 """
 mutable struct SSLMethod
     ssl_method::Ptr{Cvoid}
 end
 
-function TLSv12ClientMethod()
+function TLSClientMethod()
     ssl_method = ccall(
-        (:TLSv1_2_client_method, libssl),
+        (:TLS_client_method, libssl),
         Ptr{Cvoid},
         ())
     if ssl_method == C_NULL
@@ -141,9 +141,9 @@ function TLSv12ClientMethod()
     return SSLMethod(ssl_method)
 end
 
-function TLSv12ServerMethod()
+function TLSServerMethod()
     ssl_method = ccall(
-        (:TLSv1_2_server_method, libssl),
+        (:TLS_server_method, libssl),
         Ptr{Cvoid},
         ())
     if ssl_method == C_NULL
@@ -388,28 +388,25 @@ function ssl_disconnect(ssl::SSL)
 end
 
 function get_error(ssl::SSL, ret::Cint)::SSLErrorCode
-    err = ccall(
+    return ccall(
         (:SSL_get_error, libssl),
         SSLErrorCode,
         (SSL, Cint),
         ssl,
         ret)
-    @error err (OpenSSLError(err), catch_backtrace())
-    err == SSL_ERROR_ZERO_RETURN && throw(ioerror())
-    return err
 end
-
-ioerror() = Base.IOError("stream is closed or unusable", 0)
 
 """
     SSLStream.
 """
-struct SSLStream <: IO
+mutable struct SSLStream <: IO
     ssl::SSL
     ssl_context::SSLContext
     bio_read_stream::BIOStream
     bio_write_stream::BIOStream
     lock::ReentrantLock
+    @atomic close_notify_received::Bool
+    @atomic close_notify_sent::Bool
 
     function SSLStream(ssl_context::SSLContext, read_stream::IO, write_stream::IO)
         # Create a read and write BIOs.
@@ -432,87 +429,94 @@ struct SSLStream <: IO
         bio_read.bio = C_NULL
         bio_write.bio = C_NULL
 
-        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock())
+        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), false, false)
     end
+end
+
+SSLStream(tcp::TCPSocket) = SSLStream(SSLContext(OpenSSL.TLSClientMethod()), tcp, tcp)
+
+function geterror(f, ssl)
+    ret = f()
+    if ret <= 0
+        err = get_error(ssl.ssl, ret)
+        if err == SSL_ERROR_ZERO_RETURN
+            @atomic ssl.close_notify_received = true
+        elseif err == SSL_ERROR_NONE
+            # pass
+        else
+            throw(OpenSSLError(err))
+        end
+    end
+    return ret
 end
 
 """
     Force read operation on the stream. This will update the pending bytes.
 """
-function force_read_buffer(ssl_stream::SSLStream)
-    isclosed(ssl_stream) && return
+function force_read_buffer(ssl::SSLStream)
+    isclosed(ssl) && return
     # If there is no data in the buffer, peek and force the first read.
     in_buffer = Ref{UInt8}()
-    read_count = ccall(
-        (:SSL_peek, libssl),
-        Cint,
-        (SSL, Ref{UInt8}, Cint),
-        ssl_stream.ssl,
-        in_buffer,
-        1)
-    if read_count <= 0
-        throw(OpenSSLError(get_error(ssl_stream.ssl, read_count)))
+    return geterror(ssl) do
+        ccall(
+            (:SSL_peek, libssl),
+            Cint,
+            (SSL, Ref{UInt8}, Cint),
+            ssl.ssl,
+            in_buffer,
+            1)
     end
 end
 
-function Base.unsafe_write(ssl_stream::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
-    isopen(ssl_stream) || throw(ArgumentError("unsafe_write requires ssl_stream to be open"))
-    write_count::Int = 0
-    write_count = ccall(
-        (:SSL_write, libssl),
-        Cint,
-        (SSL, Ptr{Cvoid}, Cint),
-        ssl_stream.ssl,
-        in_buffer,
-        in_length)
-    if write_count <= 0
-        throw(OpenSSLError(get_error(ssl_stream.ssl, write_count)))
+function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
+    isopen(ssl) || throw(ArgumentError("unsafe_write requires ssl to be open"))
+    return geterror(ssl) do
+        ccall(
+            (:SSL_write, libssl),
+            Cint,
+            (SSL, Ptr{Cvoid}, Cint),
+            ssl.ssl,
+            in_buffer,
+            in_length)
     end
-
-    return write_count
 end
 
-function Sockets.connect(ssl_stream::SSLStream)
-    ssl_connect(ssl_stream.ssl)
+function Sockets.connect(ssl::SSLStream)
+    ssl_connect(ssl.ssl)
 end
 
 hostname!(ssl::SSLStream, host) = ssl_set_host(ssl.ssl, host)
 
-function Sockets.accept(ssl_stream::SSLStream)
-    ssl_accept(ssl_stream.ssl)
+function Sockets.accept(ssl::SSLStream)
+    ssl_accept(ssl.ssl)
 end
 
 """
     Read from the SSL stream.
 """
-function Base.unsafe_read(ssl_stream::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
-    Base.@lock ssl_stream.lock begin
-        nread = 0
-        while nread < nbytes
-            if eof(ssl_stream)
-                throw(EOFError())
-            end
-            read_count = ccall(
+function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
+    nread = 0
+    while nread < nbytes
+        if eof(ssl)
+            throw(EOFError())
+        end
+        nread += geterror(ssl) do
+            ccall(
                 (:SSL_read, libssl),
                 Cint,
                 (SSL, Ptr{Int8}, Cint),
-                ssl_stream.ssl,
+                ssl.ssl,
                 buf + nread,
                 nbytes - nread)
-            if read_count <= 0
-                #TODO: should call SSL_get_error to see if retryable
-                throw(OpenSSLError(get_error(ssl_stream.ssl, read_count)))
-            end
-            nread += read_count
         end
-        return nread
     end
+    return nread
 end
 
-function Base.readavailable(ssl_stream::SSLStream)
-    N = bytesavailable(ssl_stream)
+function Base.readavailable(ssl::SSLStream)
+    N = bytesavailable(ssl)
     buf = Vector{UInt8}(undef, N)
-    n = unsafe_read(ssl_stream, pointer(buf), N)
+    n = unsafe_read(ssl, pointer(buf), N)
     return resize!(buf, n)
 end
 
@@ -533,13 +537,13 @@ end
 #     return nr
 # end
 
-function Base.bytesavailable(ssl_stream::SSLStream)::Cint
-    isclosed(ssl_stream) && return 0
+function Base.bytesavailable(ssl::SSLStream)::Cint
+    isclosed(ssl) && return 0
     pending_count = ccall(
         (:SSL_pending, libssl),
         Cint,
         (SSL,),
-        ssl_stream.ssl)
+        ssl.ssl)
     update_tls_error_state()
     return pending_count
 end
@@ -555,53 +559,58 @@ function haspending(s::SSLStream)
     return has_pending == 1
 end
 
-function Base.eof(ssl_stream::SSLStream)::Bool
-    isclosed(ssl_stream) && return true
-    while bytesavailable(ssl_stream) <= 0
-        # no immediate pending bytes, so let's check underlying socket
-        if !haspending(ssl_stream) && eof(ssl_stream.bio_read_stream.io)
-            return true
+function Base.eof(ssl::SSLStream)::Bool
+    isclosed(ssl) && return true
+    # @show 1, isreadable(ssl), bytesavailable(ssl)
+    Base.@lock ssl.lock begin
+        while isreadable(ssl) && bytesavailable(ssl) <= 0
+            # no immediate pending bytes, so let's check underlying socket
+            if !haspending(ssl) && eof(ssl.bio_read_stream.io)
+                return true
+            end
+            force_read_buffer(ssl)
         end
-        force_read_buffer(ssl_stream)
+        # @show 2, isreadable(ssl), bytesavailable(ssl)
+        return !isreadable(ssl) && bytesavailable(ssl) <= 0
     end
-    return false
 end
 
-Base.isreadable(ssl_stream::SSLStream)::Bool = !eof(ssl_stream) || isreadable(ssl_stream.bio_read_stream.io)
-Base.iswritable(ssl_stream::SSLStream)::Bool = iswritable(ssl_stream.bio_write_stream.io)
-Base.isopen(ssl_stream::SSLStream)::Bool = !isclosed(ssl_stream) && isopen(ssl_stream.bio_write_stream.io)
-isclosed(ssl_stream::SSLStream) = ssl_stream.ssl.ssl == C_NULL
+Base.isreadable(ssl::SSLStream)::Bool = !(@atomic(ssl.close_notify_received))
+Base.iswritable(ssl::SSLStream)::Bool = !(@atomic(ssl.close_notify_sent)) && iswritable(ssl.bio_write_stream.io)
+Base.isopen(ssl::SSLStream)::Bool = iswritable(ssl)
+isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
 
 """
     Close SSL stream.
 """
-function Base.close(ssl_stream::SSLStream)
-    isclosed(ssl_stream) && return
+function Base.close(ssl::SSLStream)
+    isclosed(ssl) && return
     # Ignore the disconnect result.
-    ssl_disconnect(ssl_stream.ssl)
+    @atomic ssl.close_notify_sent = true
+    ssl_disconnect(ssl.ssl)
 
     # SSL_free() also calls the free()ing procedures for indirectly affected items, 
     # if applicable: the buffering BIO, the read and write BIOs, 
     # cipher lists specially created for this ssl, the SSL_SESSION.
-    ssl_stream.bio_read_stream.bio.bio = C_NULL
-    ssl_stream.bio_write_stream.bio.bio = C_NULL
+    ssl.bio_read_stream.bio.bio = C_NULL
+    ssl.bio_write_stream.bio.bio = C_NULL
 
     # close underlying read/write streams
-    Base.close(ssl_stream.bio_read_stream.io)
-    Base.close(ssl_stream.bio_write_stream.io)
+    Base.close(ssl.bio_read_stream.io)
+    Base.close(ssl.bio_write_stream.io)
 
-    return finalize(ssl_stream.ssl)
+    return finalize(ssl.ssl)
 end
 
 """
     Gets the X509 certificate of the peer.
 """
-function get_peer_certificate(ssl_stream::SSLStream)::Option{X509Certificate}
+function get_peer_certificate(ssl::SSLStream)::Option{X509Certificate}
     x509 = ccall(
         (:SSL_get_peer_certificate, libssl),
         Ptr{Cvoid},
         (SSL,),
-        ssl_stream.ssl)
+        ssl.ssl)
     if x509 != C_NULL
         return X509Certificate(x509)
     else

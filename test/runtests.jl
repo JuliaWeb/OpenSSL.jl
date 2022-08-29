@@ -181,27 +181,27 @@ end
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
     # Create SSL stream.
-    ssl_stream = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
 
     #TODO expose connect
-    OpenSSL.connect(ssl_stream)
+    OpenSSL.connect(ssl)
 
-    x509_server_cert = OpenSSL.get_peer_certificate(ssl_stream)
+    x509_server_cert = OpenSSL.get_peer_certificate(ssl)
 
     @test String(x509_server_cert.issuer_name) == "/C=US/O=Let's Encrypt/CN=R3"
     @test String(x509_server_cert.subject_name) == "/CN=nghttp2.org"
 
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
 
-    written = write(ssl_stream, request_str)
+    written = write(ssl, request_str)
 
     io = IOBuffer()
-    while !eof(ssl_stream)
-        write(io, readavailable(ssl_stream))
+    while !eof(ssl)
+        write(io, readavailable(ssl))
     end
     response = String(take!(io))
 
-    close(ssl_stream)
+    close(ssl)
     finalize(ssl_ctx)
 end
 
@@ -212,16 +212,16 @@ end
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
     OpenSSL.ssl_set_ciphersuites(ssl_ctx, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
 
-    ssl_stream = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
 
-    OpenSSL.connect(ssl_stream)
+    OpenSSL.connect(ssl)
 
     # Close the ssl stream.
-    close(ssl_stream)
+    close(ssl)
 
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
 
-    err = @catch_exception_object unsafe_write(ssl_stream, pointer(request_str), length(request_str))
+    err = @catch_exception_object unsafe_write(ssl, pointer(request_str), length(request_str))
     @test typeof(err) == Base.IOError
 
     finalize(ssl_ctx)
@@ -233,17 +233,17 @@ end
 
     # Create SSL stream.
     tcp_stream = connect("www.nghttp2.org", 443)
-    ssl_stream = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
-    OpenSSL.connect(ssl_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    OpenSSL.connect(ssl)
 
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
-    unsafe_write(ssl_stream, pointer(request_str), length(request_str))
+    unsafe_write(ssl, pointer(request_str), length(request_str))
 
-    response = read(ssl_stream)
+    response = read(ssl)
     @test contains(String(response), "HTTP/1.1 200 OK")
 
     # Do not close SSLStream, leave it to the finalizer.
-    #close(ssl_stream)
+    #close(ssl)
     #finalize(ssl_ctx)
 end
 
@@ -253,12 +253,12 @@ end
 
     # Create SSL stream.
     tcp_stream = connect("www.nghttp2.org", 443)
-    ssl_stream = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
 
-    err = @catch_exception_object read(ssl_stream)
+    err = @catch_exception_object read(ssl)
     @test typeof(err) == OpenSSL.OpenSSLError
 
-    close(ssl_stream)
+    close(ssl)
     free(ssl_ctx)
 end
 
