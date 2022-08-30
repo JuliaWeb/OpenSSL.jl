@@ -561,7 +561,6 @@ end
 
 function Base.eof(ssl::SSLStream)::Bool
     isclosed(ssl) && return true
-    # @show 1, isreadable(ssl), bytesavailable(ssl)
     Base.@lock ssl.lock begin
         while isreadable(ssl) && bytesavailable(ssl) <= 0
             # no immediate pending bytes, so let's check underlying socket
@@ -570,7 +569,6 @@ function Base.eof(ssl::SSLStream)::Bool
             end
             force_read_buffer(ssl)
         end
-        # @show 2, isreadable(ssl), bytesavailable(ssl)
         return !isreadable(ssl) && bytesavailable(ssl) <= 0
     end
 end

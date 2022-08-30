@@ -5,7 +5,7 @@ using OpenSSL_jll
 using Sockets
 using Test
 
-include("http_helpers.jl")
+include(joinpath(dirname(pathof(OpenSSL)), "../test/http_helpers.jl"))
 
 macro catch_exception_object(code)
     quote
@@ -15,7 +15,7 @@ macro catch_exception_object(code)
         catch e
             e
         end
-        if err == nothing
+        if err === nothing
             error("Expected exception, got $err.")
         end
         err
@@ -177,7 +177,7 @@ end
 @testset "HttpsConnect" begin
     tcp_stream = connect("www.nghttp2.org", 443)
 
-    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ClientMethod())
+    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod())
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
     # Create SSL stream.
@@ -195,12 +195,12 @@ end
 
     written = write(ssl, request_str)
 
+    @test !eof(ssl)
     io = IOBuffer()
-    while !eof(ssl)
-        write(io, readavailable(ssl))
-    end
+    sleep(2)
+    write(io, readavailable(ssl))
     response = String(take!(io))
-
+    @test startswith(response, "HTTP/1.1 200 OK\r\n")
     close(ssl)
     finalize(ssl_ctx)
 end
@@ -208,7 +208,7 @@ end
 @testset "ClosedStream" begin
     tcp_stream = connect("www.nghttp2.org", 443)
 
-    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ClientMethod())
+    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod())
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
     OpenSSL.ssl_set_ciphersuites(ssl_ctx, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
 
@@ -221,14 +221,12 @@ end
 
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
 
-    err = @catch_exception_object unsafe_write(ssl, pointer(request_str), length(request_str))
-    @test typeof(err) == Base.IOError
-
+    @test_throws ArgumentError unsafe_write(ssl, pointer(request_str), length(request_str))
     finalize(ssl_ctx)
 end
 
 @testset "NoCloseStream" begin
-    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ClientMethod())
+    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod())
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
     # Create SSL stream.
@@ -239,27 +237,16 @@ end
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
     unsafe_write(ssl, pointer(request_str), length(request_str))
 
-    response = read(ssl)
-    @test contains(String(response), "HTTP/1.1 200 OK")
+    @test !eof(ssl)
+    io = IOBuffer()
+    sleep(2)
+    write(io, readavailable(ssl))
+    response = String(take!(io))
+    @test startswith(response, "HTTP/1.1 200 OK\r\n")
 
     # Do not close SSLStream, leave it to the finalizer.
     #close(ssl)
     #finalize(ssl_ctx)
-end
-
-@testset "InvalidStream" begin
-    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ClientMethod())
-    result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
-
-    # Create SSL stream.
-    tcp_stream = connect("www.nghttp2.org", 443)
-    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
-
-    err = @catch_exception_object read(ssl)
-    @test typeof(err) == OpenSSL.OpenSSLError
-
-    close(ssl)
-    free(ssl_ctx)
 end
 
 @testset "Hash" begin
@@ -389,7 +376,7 @@ end
     err_msg = OpenSSL.get_error()
     @test err_msg == ""
 
-    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSv12ServerMethod())
+    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod())
 
     # Make direct invalid call to OpenSSL
     invalid_cipher_suites = "TLS_AES_356_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"
