@@ -1,6 +1,6 @@
 name = "OpenSSL"
 uuid = "4d8831e6-92b7-49fb-bdf8-b643e874388c"
-authors = ["Greg Lapinski <grzegorz.lapinski@live.com>"]
+authors = ["Greg Lapinski <grzegorz.lapinski@live.com>", "Jacob Quinn <quinn.jacobd@gmail.com>"]
 version = "0.1.0"
 
 [deps]
