@@ -579,9 +579,6 @@ end
 end
 
 @testset "SSLServer" begin
-    f1 = @async test_server()
-    f2 = @async test_client()
-
-    fetch(f2)
-    fetch(f1)
+    errormonitor(@async test_server())
+    errormonitor(@async test_client())
 end
