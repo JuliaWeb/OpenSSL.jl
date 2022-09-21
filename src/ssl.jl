@@ -396,6 +396,23 @@ function get_error(ssl::SSL, ret::Cint)::SSLErrorCode
         ret)
 end
 
+macro atomicget(ex)
+    @static if VERSION < v"1.7"
+        return esc(Expr(:ref, ex))
+    else
+        return esc(:(@atomic $ex))
+    end
+end
+
+macro atomicset(ex)
+    @static if VERSION < v"1.7"
+        ex.args[1] = Expr(:ref, ex.args[1])
+        return esc(ex)
+    else
+        return esc(:(@atomic $ex))
+    end
+end
+
 """
     SSLStream.
 """
@@ -405,8 +422,13 @@ mutable struct SSLStream <: IO
     bio_read_stream::BIOStream
     bio_write_stream::BIOStream
     lock::ReentrantLock
+@static if VERSION < v"1.7"
+    close_notify_received::Threads.Atomic{Bool}
+    close_notify_sent::Threads.Atomic{Bool}
+else
     @atomic close_notify_received::Bool
     @atomic close_notify_sent::Bool
+end
 
     function SSLStream(ssl_context::SSLContext, read_stream::IO, write_stream::IO)
         # Create a read and write BIOs.
@@ -429,7 +451,11 @@ mutable struct SSLStream <: IO
         bio_read.bio = C_NULL
         bio_write.bio = C_NULL
 
+@static if VERSION < v"1.7"
+        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
+else
         return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), false, false)
+end
     end
 end
 
@@ -440,7 +466,7 @@ function geterror(f, ssl)
     if ret <= 0
         err = get_error(ssl.ssl, ret)
         if err == SSL_ERROR_ZERO_RETURN
-            @atomic ssl.close_notify_received = true
+            @atomicset ssl.close_notify_received = true
         elseif err == SSL_ERROR_NONE
             # pass
         else
@@ -573,8 +599,8 @@ function Base.eof(ssl::SSLStream)::Bool
     end
 end
 
-Base.isreadable(ssl::SSLStream)::Bool = !(@atomic(ssl.close_notify_received))
-Base.iswritable(ssl::SSLStream)::Bool = !(@atomic(ssl.close_notify_sent)) && iswritable(ssl.bio_write_stream.io)
+Base.isreadable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_received))
+Base.iswritable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_sent)) && iswritable(ssl.bio_write_stream.io)
 Base.isopen(ssl::SSLStream)::Bool = iswritable(ssl)
 isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
 
@@ -584,7 +610,7 @@ isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
 function Base.close(ssl::SSLStream)
     isclosed(ssl) && return
     # Ignore the disconnect result.
-    @atomic ssl.close_notify_sent = true
+    @atomicset ssl.close_notify_sent = true
     ssl_disconnect(ssl.ssl)
 
     # SSL_free() also calls the free()ing procedures for indirectly affected items, 

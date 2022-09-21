@@ -579,6 +579,10 @@ end
 end
 
 @testset "SSLServer" begin
-    errormonitor(@async test_server())
-    errormonitor(@async test_client())
+    server_task = @async test_server()
+    client_task = @async test_client()
+    if isdefined(Base, :errormonitor)
+        errormonitor(server_task)
+        errormonitor(client_task)
+    end
 end

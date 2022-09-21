@@ -11,7 +11,7 @@ OpenSSL_jll = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
 
 [compat]
-julia = "1.7"
+julia = "1.6"
 BitFlags = "0.1"
 MozillaCACerts_jll = ">= 2020"
 OpenSSL_jll = "1.1"
