@@ -1555,7 +1555,7 @@ mutable struct Asn1Time
 
     Asn1Time(date_time::DateTime) = Asn1Time(Int64(floor(datetime2unix(date_time))))
 
-    function Asn1Time(unix_time::Int64)
+    function Asn1Time(unix_time::Int)
         asn1_time = ccall(
             (:ASN1_TIME_set, libcrypto),
             Ptr{Cvoid},
@@ -2723,8 +2723,8 @@ mutable struct OpenSSLInit
 
         if ccall(
             (:OPENSSL_init_crypto, libcrypto),
-            UInt64,
-            (Cint, Ptr{Cvoid}),
+            Cint,
+            (UInt64, Ptr{Cvoid}),
             opts,
             C_NULL) != 1
             throw(OpenSSLError())
@@ -2733,8 +2733,8 @@ mutable struct OpenSSLInit
         if ccall(
             (:OPENSSL_init_ssl, libssl),
             Cint,
-            (Cint, Ptr{Cvoid}),
-            Cint(OPENSSL_INIT_LOAD_SSL_STRINGS),
+            (UInt64, Ptr{Cvoid}),
+            OPENSSL_INIT_LOAD_SSL_STRINGS,
             C_NULL) != 1
             throw(OpenSSLError())
         end
