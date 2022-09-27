@@ -461,7 +461,7 @@ end
 
 SSLStream(tcp::TCPSocket) = SSLStream(SSLContext(OpenSSL.TLSClientMethod()), tcp, tcp)
 
-function geterror(f, ssl)
+function geterror(f, ssl::SSLStream)
     ret = f()
     if ret <= 0
         err = get_error(ssl.ssl, ret)
@@ -470,7 +470,8 @@ function geterror(f, ssl)
         elseif err == SSL_ERROR_NONE
             # pass
         else
-            throw(OpenSSLError(err))
+            close(ssl, false)
+            throw(Base.IOError(OpenSSLError(err).msg, 0))
         end
     end
     return ret
@@ -495,7 +496,7 @@ function force_read_buffer(ssl::SSLStream)
 end
 
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
-    isopen(ssl) || throw(ArgumentError("unsafe_write requires ssl to be open"))
+    isopen(ssl) || throw(Base.IOError("unsafe_write requires ssl to be open", 0))
     return geterror(ssl) do
         ccall(
             (:SSL_write, libssl),
@@ -592,7 +593,9 @@ function Base.eof(ssl::SSLStream)::Bool
         while isreadable(ssl) && bytesavailable(ssl) <= 0
             # no immediate pending bytes, so let's check underlying socket
             if !haspending(ssl)
-                eof(ssl.bio_read_stream.io)
+                if eof(ssl.bio_read_stream.io) && !haspending(ssl)
+                    return true
+                end
             end
             force_read_buffer(ssl)
         end
@@ -609,11 +612,11 @@ isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
 """
     Close SSL stream.
 """
-function Base.close(ssl::SSLStream)
+function Base.close(ssl::SSLStream, shutdown::Bool=true)
     isclosed(ssl) && return
     # Ignore the disconnect result.
     @atomicset ssl.close_notify_sent = true
-    ssl_disconnect(ssl.ssl)
+    shutdown && ssl_disconnect(ssl.ssl)
 
     # SSL_free() also calls the free()ing procedures for indirectly affected items, 
     # if applicable: the buffering BIO, the read and write BIOs, 
