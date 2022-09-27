@@ -2943,7 +2943,7 @@ function OpenSSLError(ret::Integer)
         (:ERR_error_string, libcrypto),
         Ptr{UInt8},
         (Culong, Ptr{UInt8}),
-        ret, C_NULL
+        Base.bitcast(Culong, Clong(ret)), C_NULL
     )
     return OpenSSLError(unsafe_string(ptr))
 end
@@ -2985,7 +2985,8 @@ const BIO_STREAM_METHOD = Ref{BIOMethod}()
 function __init__()
     OPEN_SSL_INIT.x = OpenSSLInit()
     BIO_STREAM_CALLBACKS.x = BIOStreamCallbacks()
-    return BIO_STREAM_METHOD.x = BIOMethod("BIO_STREAM_METHOD")
+    BIO_STREAM_METHOD.x = BIOMethod("BIO_STREAM_METHOD")
+    return
 end
 
 end # OpenSSL module

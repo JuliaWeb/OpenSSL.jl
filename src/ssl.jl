@@ -587,20 +587,22 @@ end
 
 function Base.eof(ssl::SSLStream)::Bool
     isclosed(ssl) && return true
+    bytesavailable(ssl) > 0 && return false
     Base.@lock ssl.lock begin
         while isreadable(ssl) && bytesavailable(ssl) <= 0
             # no immediate pending bytes, so let's check underlying socket
-            if !haspending(ssl) && eof(ssl.bio_read_stream.io)
-                return true
+            if !haspending(ssl)
+                eof(ssl.bio_read_stream.io)
             end
             force_read_buffer(ssl)
         end
-        return !isreadable(ssl) && bytesavailable(ssl) <= 0
     end
+    bytesavailable(ssl) > 0 && return false
+    return !isreadable(ssl)
 end
 
 Base.isreadable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_received))
-Base.iswritable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_sent)) && iswritable(ssl.bio_write_stream.io)
+Base.iswritable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_sent)) && isopen(ssl.bio_write_stream.io)
 Base.isopen(ssl::SSLStream)::Bool = iswritable(ssl)
 isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
 
