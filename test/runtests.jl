@@ -221,7 +221,7 @@ end
 
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
 
-    @test_throws ArgumentError unsafe_write(ssl, pointer(request_str), length(request_str))
+    @test_throws Base.IOError unsafe_write(ssl, pointer(request_str), length(request_str))
     finalize(ssl_ctx)
 end
 
