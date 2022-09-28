@@ -624,11 +624,17 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
     ssl.bio_read_stream.bio.bio = C_NULL
     ssl.bio_write_stream.bio.bio = C_NULL
 
+    finalize(ssl.ssl)
     # close underlying read/write streams
-    Base.close(ssl.bio_read_stream.io)
-    Base.close(ssl.bio_write_stream.io)
+    em = isdefined(Base, :errormonitor) ? Base.errormonitor : x -> nothing
+    em(@async try
+        Base.close(ssl.bio_read_stream.io)
+        Base.close(ssl.bio_write_stream.io)
+    catch e
+        e isa Base.IOError || rethrow()
+    end)
 
-    return finalize(ssl.ssl)
+    return
 end
 
 """
