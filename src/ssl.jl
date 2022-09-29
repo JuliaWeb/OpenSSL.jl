@@ -613,9 +613,11 @@ isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
     Close SSL stream.
 """
 function Base.close(ssl::SSLStream, shutdown::Bool=true)
+    @warn "close(ssl::SSLStream)"
     isclosed(ssl) && return
     # Ignore the disconnect result.
     @atomicset ssl.close_notify_sent = true
+    @warn "ssl_disconnect"
     shutdown && ssl_disconnect(ssl.ssl)
 
     # SSL_free() also calls the free()ing procedures for indirectly affected items, 
@@ -624,10 +626,12 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
     ssl.bio_read_stream.bio.bio = C_NULL
     ssl.bio_write_stream.bio.bio = C_NULL
 
+    @warn "finalize"
     finalize(ssl.ssl)
     # close underlying read/write streams
     em = isdefined(Base, :errormonitor) ? Base.errormonitor : x -> nothing
     em(@async try
+        @warn "close bio_read_stream/bio_write_stream"
         Base.close(ssl.bio_read_stream.io)
         Base.close(ssl.bio_write_stream.io)
     catch e
