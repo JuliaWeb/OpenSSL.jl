@@ -422,6 +422,7 @@ mutable struct SSLStream <: IO
     bio_read_stream::BIOStream
     bio_write_stream::BIOStream
     lock::ReentrantLock
+    closelock::ReentrantLock
 @static if VERSION < v"1.7"
     close_notify_received::Threads.Atomic{Bool}
     close_notify_sent::Threads.Atomic{Bool}
@@ -452,9 +453,9 @@ end
         bio_write.bio = C_NULL
 
 @static if VERSION < v"1.7"
-        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
+        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), ReentrantLock(), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
 else
-        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), false, false)
+        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), ReentrantLock(), false, false)
 end
     end
 end
@@ -613,22 +614,33 @@ isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
     Close SSL stream.
 """
 function Base.close(ssl::SSLStream, shutdown::Bool=true)
-    isclosed(ssl) && return
-    # Ignore the disconnect result.
-    @atomicset ssl.close_notify_sent = true
-    shutdown && ssl_disconnect(ssl.ssl)
+    Base.@lock ssl.closelock begin
+        # check if already closed
+        (isclosed(ssl) || @atomicget(ssl.close_notify_sent)) && return
+        @atomicset ssl.close_notify_sent = true
+        # Ignore the disconnect result.
+        shutdown && ssl_disconnect(ssl.ssl)
 
-    # SSL_free() also calls the free()ing procedures for indirectly affected items, 
-    # if applicable: the buffering BIO, the read and write BIOs, 
-    # cipher lists specially created for this ssl, the SSL_SESSION.
-    ssl.bio_read_stream.bio.bio = C_NULL
-    ssl.bio_write_stream.bio.bio = C_NULL
+        # SSL_free() also calls the free()ing procedures for indirectly affected items, 
+        # if applicable: the buffering BIO, the read and write BIOs, 
+        # cipher lists specially created for this ssl, the SSL_SESSION.
+        ssl.bio_read_stream.bio.bio = C_NULL
+        ssl.bio_write_stream.bio.bio = C_NULL
 
-    # close underlying read/write streams
-    Base.close(ssl.bio_read_stream.io)
-    Base.close(ssl.bio_write_stream.io)
-
-    return finalize(ssl.ssl)
+        # close underlying read/write streams
+        try
+            Base.close(ssl.bio_read_stream.io)
+        catch e
+            e isa Base.IOError || rethrow()
+        end
+        try
+            Base.close(ssl.bio_write_stream.io)
+        catch e
+            e isa Base.IOError || rethrow()
+        end
+        finalize(ssl.ssl)
+    end
+    return 
 end
 
 """
