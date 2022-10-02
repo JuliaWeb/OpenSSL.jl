@@ -27,24 +27,28 @@ end
 on_bio_stream_destroy(bio::BIO)::Cint = Cint(0)
 
 function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)::Cint
-    bio_stream = bio_stream_from_data(bio)
-
-    eof(bio_stream.io)
-    available_bytes = bytesavailable(bio_stream.io)
-
-    outlen = min(outlen, available_bytes)
-
-    unsafe_read(bio_stream.io, out, outlen)
-
-    return outlen
+    try
+        bio_stream = bio_stream_from_data(bio)
+        eof(bio_stream.io)
+        available_bytes = bytesavailable(bio_stream.io)
+        outlen = min(outlen, available_bytes)
+        unsafe_read(bio_stream.io, out, outlen)
+        return outlen
+    catch e
+        # we don't want to throw a Julia exception from a C callback
+        return Cint(0)
+    end
 end
 
 function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
-    bio_stream = bio_stream_from_data(bio)
-
-    written = unsafe_write(bio_stream.io, in, inlen)
-
-    return Cint(written)
+    try
+        bio_stream = bio_stream_from_data(bio)
+        written = unsafe_write(bio_stream.io, in, inlen)
+        return Cint(written)
+    catch e
+        # we don't want to throw a Julia exception from a C callback
+        return Cint(0)
+    end
 end
 
 on_bio_stream_puts(bio::BIO, in::Ptr{Cchar})::Cint = Cint(0)
@@ -377,13 +381,6 @@ function ssl_disconnect(ssl::SSL)
         Cint,
         (SSL,),
         ssl)
-
-    # Clear ssl_error queue.
-    ccall(
-        (:ERR_clear_error, libcrypto),
-        Cvoid,
-        ())
-
     return nothing
 end
 
