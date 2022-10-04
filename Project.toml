@@ -1,7 +1,7 @@
 name = "OpenSSL"
 uuid = "4d8831e6-92b7-49fb-bdf8-b643e874388c"
 authors = ["Greg Lapinski <grzegorz.lapinski@live.com>", "Jacob Quinn <quinn.jacobd@gmail.com>"]
-version = "1.1.3"
+version = "1.2.0"
 
 [deps]
 BitFlags = "d1d4a3ce-64b1-5f1a-9ba4-7e7e69966f35"
