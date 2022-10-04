@@ -11,7 +11,6 @@ using MozillaCACerts_jll
     [x] X509 extension
     [x] Free BIO
     [x] Free BIOMethod
-    [x] Free on BIOStream
     [x] Close SSLContext
     [x] BIOStream method (callbacks)
     [x] Store the SSLContext (part of SSLStream)
@@ -1410,7 +1409,7 @@ mutable struct BIO
         Creates a BIO object using IO stream method.
         The BIO object is not registered with the finalizer.
     """
-    function BIO()
+    function BIO(data=nothing; finalize::Bool=true)
         bio = ccall(
             (:BIO_new, libcrypto),
             Ptr{Cvoid},
@@ -1421,15 +1420,28 @@ mutable struct BIO
         end
 
         bio = new(bio)
-        finalizer(free, bio)
+        finalize && finalizer(free, bio)
 
+        # note that `data` must be held as a reference somewhere else
+        # since it is not referenced by the BIO directly
+        # e.g. in SSLStream, we keep the `io` reference that is passed to
+        # the read/write BIOs
         ccall(
             (:BIO_set_data, libcrypto),
             Cvoid,
             (BIO, Ptr{Cvoid}),
             bio,
-            C_NULL)
+            data === nothing ? C_NULL : pointer_from_objref(data))
 
+        # Set BIO as non-blocking
+        ccall(
+            (:BIO_ctrl, libcrypto),
+            Cint,
+            (BIO, Cint, Cint, Ptr{Cvoid}),
+            bio,
+            102,
+            1,
+            C_NULL)
         # Mark BIO as initalized.
         ccall(
             (:BIO_set_init, libcrypto),
@@ -1715,16 +1727,14 @@ function Base.:(==)(evp_pkey_1::EvpPKey, evp_pkey_2::EvpPKey)
 end
 
 function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
-    bio_stream = OpenSSL.BIOStream(io)
+    bio = BIO(io)
 
-    GC.@preserve bio_stream begin
-        bio_stream_set_data(bio_stream)
-
+    GC.@preserve io begin
         if ccall(
             (:PEM_write_bio_PrivateKey, libcrypto),
             Cint,
             (BIO, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
-            bio_stream.bio,
+            bio,
             evp_pkey,
             evp_cipher,
             C_NULL,
@@ -2123,16 +2133,14 @@ function Base.:(==)(x509_cert_1::X509Certificate, x509_cert_2::X509Certificate)
 end
 
 function Base.write(io::IO, x509_cert::X509Certificate)
-    bio_stream = OpenSSL.BIOStream(io)
+    bio = BIO(io)
 
-    GC.@preserve bio_stream begin
-        bio_stream_set_data(bio_stream)
-
+    GC.@preserve io begin
         if ccall(
             (:PEM_write_bio_X509, libcrypto),
             Cint,
             (BIO, X509Certificate),
-            bio_stream.bio,
+            bio,
             x509_cert) != 1
             throw(OpenSSLError())
         end
@@ -2411,16 +2419,14 @@ function free(x509_req::X509Request)
 end
 
 function Base.write(io::IO, x509_req::X509Request)
-    bio_stream = OpenSSL.BIOStream(io)
+    bio = BIO(io)
 
-    GC.@preserve bio_stream begin
-        bio_stream_set_data(bio_stream)
-
+    GC.@preserve io begin
         if ccall(
             (:PEM_write_bio_X509_REQ, libcrypto),
             Cint,
             (BIO, X509Request),
-            bio_stream.bio,
+            bio,
             x509_req) != 1
             throw(OpenSSLError())
         end
@@ -2672,16 +2678,14 @@ function free(p12_object::P12Object)
 end
 
 function Base.write(io::IO, p12_object::P12Object)
-    bio_stream = OpenSSL.BIOStream(io)
+    bio = BIO(io)
 
-    GC.@preserve bio_stream begin
-        bio_stream_set_data(bio_stream)
-
+    GC.@preserve io begin
         if ccall(
             (:i2d_PKCS12_bio, libcrypto),
             Cint,
             (BIO, P12Object),
-            bio_stream.bio,
+            bio,
             p12_object) != 1
             throw(OpenSSLError())
         end
