@@ -577,24 +577,32 @@ Base.iswritable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_sent)) && 
 Base.isopen(ssl::SSLStream)::Bool = iswritable(ssl)
 isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
 
+const DEBUG_LOG = Ref{Bool}(false)
+
 """
     Close SSL stream.
 """
 function Base.close(ssl::SSLStream, shutdown::Bool=true)
     Base.@lock ssl.closelock begin
+        DEBUG_LOG[] && @warn "close(ssl::SSLStream, shutdown::Bool=$shutdown)"
         # check if already closed
         (isclosed(ssl) || @atomicget(ssl.close_notify_sent)) && return
         @atomicset ssl.close_notify_sent = true
         # Ignore the disconnect result.
+        DEBUG_LOG[] && @warn "ssl_disconnect"
         shutdown && ssl_disconnect(ssl.ssl)
-
+        DEBUG_LOG[] && @warn "ssl_disconnect done"
         # close underlying read/write streams
         try
+            DEBUG_LOG[] && @warn "close"
             Base.close(ssl.io)
+            DEBUG_LOG[] && @warn "closed"
         catch e
             e isa Base.IOError || rethrow()
         end
+        DEBUG_LOG[] && @warn "finalize"
         finalize(ssl.ssl)
+        DEBUG_LOG[] && @warn "finalize done"
     end
     return 
 end
