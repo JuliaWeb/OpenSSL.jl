@@ -396,6 +396,10 @@ end
     end
 end
 
+# backwards compat
+SSLStream(ssl_context::SSLContext, io::IO, ::IO) = SSLStream(ssl_context, io)
+Base.getproperty(ssl::SSLStream, nm::Symbol) = nm === :bio_read_stream ? ssl : getfield(ssl, nm)
+
 SSLStream(tcp::TCPSocket) = SSLStream(SSLContext(OpenSSL.TLSClientMethod()), tcp)
 
 function geterror(f, ssl::SSLStream)
