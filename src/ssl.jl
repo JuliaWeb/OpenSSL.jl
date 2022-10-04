@@ -5,36 +5,40 @@
 """
     Called to initialize new BIO Stream object.
 """
-function on_bio_stream_create(bio::BIO)::Cint
-    # Initalize BIO.
-    ccall(
-        (:BIO_set_init, libcrypto),
-        Cvoid,
-        (BIO, Cint),
-        bio,
-        0)
-
-    ccall(
-        (:BIO_set_data, libcrypto),
-        Cvoid,
-        (BIO, Cint),
-        bio,
-        C_NULL)
-
-    return Cint(1)
-end
-
+on_bio_stream_create(bio::BIO) = Cint(1)
 on_bio_stream_destroy(bio::BIO)::Cint = Cint(0)
 
-function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)::Cint
+function bio_get_data(bio::BIO)
+    data = ccall(
+        (:BIO_get_data, libcrypto),
+        Ptr{Cvoid},
+        (BIO,),
+        bio)
+    return unsafe_pointer_to_objref(data)
+end
+
+const BIO_FLAGS_SHOULD_RETRY = 0x08
+const BIO_FLAGS_READ = 0x01
+const BIO_FLAGS_WRITE = 0x02
+const BIO_FLAGS_IO_SPECIAL = 0x04
+
+function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
     try
-        bio_stream = bio_stream_from_data(bio)
-        eof(bio_stream.io)
-        available_bytes = bytesavailable(bio_stream.io)
-        outlen = min(outlen, available_bytes)
-        unsafe_read(bio_stream.io, out, outlen)
-        return outlen
+        io = bio_get_data(bio)
+        n = bytesavailable(io)
+        if n == 0
+            ccall(
+                (:BIO_set_flags, libcrypto),
+                Cint,
+                (BIO, Cint),
+                bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
+            return Cint(0)
+        end
+        outlen = min(outlen, n)
+        unsafe_read(io, out, outlen)
+        return Cint(outlen)
     catch e
+        @show e
         # we don't want to throw a Julia exception from a C callback
         return Cint(0)
     end
@@ -42,8 +46,8 @@ end
 
 function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
     try
-        bio_stream = bio_stream_from_data(bio)
-        written = unsafe_write(bio_stream.io, in, inlen)
+        io = bio_get_data(bio)
+        written = unsafe_write(io, in, inlen)
         return Cint(written)
     catch e
         # we don't want to throw a Julia exception from a C callback
@@ -53,7 +57,7 @@ end
 
 on_bio_stream_puts(bio::BIO, in::Ptr{Cchar})::Cint = Cint(0)
 
-on_bio_stream_ctrl(bio::BIO, cmd::BIOCtrl, num::Int64, ptr::Ptr{Cvoid})::Int64 = 1
+on_bio_stream_ctrl(bio::BIO, cmd::BIOCtrl, num::Clong, ptr::Ptr{Cvoid}) = Clong(1)
 
 """
     BIO Stream callbacks.
@@ -72,7 +76,7 @@ struct BIOStreamCallbacks
         on_bio_read_ptr = @cfunction on_bio_stream_read Cint (BIO, Ptr{Cchar}, Cint)
         on_bio_write_ptr = @cfunction on_bio_stream_write Cint (BIO, Ptr{Cchar}, Cint)
         on_bio_puts_ptr = @cfunction on_bio_stream_puts Cint (BIO, Ptr{Cchar})
-        on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Int64 (BIO, BIOCtrl, Int64, Ptr{Cvoid})
+        on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Clong (BIO, BIOCtrl, Clong, Ptr{Cvoid})
 
         return new(
             on_bio_create_ptr,
@@ -83,47 +87,6 @@ struct BIOStreamCallbacks
             on_bio_ctrl_ptr)
     end
 end
-
-"""
-    BIOStream.
-"""
-mutable struct BIOStream <: IO
-    bio::BIO
-    io::Option{IO}
-
-    BIOStream(io::IO) = new(BIO(), io)
-
-    BIOStream(bio::BIO, io::IO) = new(bio, io)
-end
-
-function bio_stream_set_data(bio_stream::BIOStream)
-    # Ensure the BIO is valid.
-    if bio_stream.bio.bio == C_NULL
-        throw(Base.IOError("bio stream is closed or unusable", 0))
-    end
-
-    ccall(
-        (:BIO_set_data, libcrypto),
-        Cvoid,
-        (BIO, Ptr{Cvoid}),
-        bio_stream.bio,
-        pointer_from_objref(bio_stream))
-    return nothing
-end
-
-function bio_stream_from_data(bio::BIO)::BIOStream
-    user_data::Ptr{Cvoid} = ccall(
-        (:BIO_get_data, libcrypto),
-        Ptr{Cvoid},
-        (BIO,),
-        bio)
-
-    bio_stream::BIOStream = unsafe_pointer_to_objref(user_data)
-
-    return bio_stream
-end
-
-Base.close(bio_stream::BIOStream) = free(bio_stream.bio)
 
 """
     SSLMethod.
@@ -337,21 +300,11 @@ function ssl_set_host(ssl::SSL, host)
 end
 
 function ssl_connect(ssl::SSL)
-    if (ret = ccall(
+    return ccall(
         (:SSL_connect, libssl),
         Cint,
         (SSL,),
-        ssl)) != 1
-        throw(OpenSSLError(ret))
-    end
-
-    ccall(
-        (:SSL_set_read_ahead, libssl),
-        Cvoid,
-        (SSL, Cint),
-        ssl,
-        Int32(1))
-    return nothing
+        ssl)
 end
 
 function ssl_accept(ssl::SSL)
@@ -416,8 +369,9 @@ end
 mutable struct SSLStream <: IO
     ssl::SSL
     ssl_context::SSLContext
-    bio_read_stream::BIOStream
-    bio_write_stream::BIOStream
+    rbio::BIO
+    wbio::BIO
+    io::IO
     lock::ReentrantLock
     closelock::ReentrantLock
 @static if VERSION < v"1.7"
@@ -428,45 +382,35 @@ else
     @atomic close_notify_sent::Bool
 end
 
-    function SSLStream(ssl_context::SSLContext, read_stream::IO, write_stream::IO)
+    function SSLStream(ssl_context::SSLContext, io::IO)
         # Create a read and write BIOs.
-        bio_read::BIO = BIO()
-        bio_write::BIO = BIO()
-
-        # Create a new BIOs instances (without the finalizer), as SSL will free them on close.
-        bio_read_ssl_context = BIO(bio_read.bio)
-        bio_write_ssl_context = BIO(bio_write.bio)
-
-        bio_read_stream = BIOStream(bio_read_ssl_context, read_stream)
-        bio_write_stream = BIOStream(bio_write_ssl_context, write_stream)
-
-        bio_stream_set_data(bio_read_stream)
-        bio_stream_set_data(bio_write_stream)
-
-        ssl = SSL(ssl_context, bio_read_ssl_context, bio_write_ssl_context)
-
-        # Ensure the finalization is no-op.
-        bio_read.bio = C_NULL
-        bio_write.bio = C_NULL
+        bio_read::BIO = BIO(io; finalize=false)
+        bio_write::BIO = BIO(io; finalize=false)
+        ssl = SSL(ssl_context, bio_read, bio_write)
 
 @static if VERSION < v"1.7"
-        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), ReentrantLock(), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
 else
-        return new(ssl, ssl_context, bio_read_stream, bio_write_stream, ReentrantLock(), ReentrantLock(), false, false)
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), false, false)
 end
     end
 end
 
-SSLStream(tcp::TCPSocket) = SSLStream(SSLContext(OpenSSL.TLSClientMethod()), tcp, tcp)
+SSLStream(tcp::TCPSocket) = SSLStream(SSLContext(OpenSSL.TLSClientMethod()), tcp)
 
 function geterror(f, ssl::SSLStream)
     ret = f()
+    # @show ret, typeof(ret)
     if ret <= 0
         err = get_error(ssl.ssl, ret)
         if err == SSL_ERROR_ZERO_RETURN
             @atomicset ssl.close_notify_received = true
         elseif err == SSL_ERROR_NONE
             # pass
+        elseif err == SSL_ERROR_WANT_READ
+            return SSL_ERROR_WANT_READ
+        elseif err == SSL_ERROR_WANT_WRITE
+            return SSL_ERROR_WANT_WRITE
         else
             close(ssl, false)
             throw(Base.IOError(OpenSSLError(err).msg, 0))
@@ -507,7 +451,29 @@ function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UIn
 end
 
 function Sockets.connect(ssl::SSLStream)
-    ssl_connect(ssl.ssl)
+    while true
+        ret = geterror(ssl) do
+            ssl_connect(ssl.ssl)
+        end
+        # @show ret, typeof(ret)
+        if (ret == 1 || ret == SSL_ERROR_NONE)
+            break
+        elseif ret == SSL_ERROR_WANT_READ
+            if eof(ssl.io)
+                throw(EOFError())
+            end
+        else
+            throw(Base.IOError(OpenSSLError(ret).msg, 0))
+        end
+    end
+
+    ccall(
+        (:SSL_set_read_ahead, libssl),
+        Cvoid,
+        (SSL, Cint),
+        ssl.ssl,
+        Cint(1))
+    return
 end
 
 hostname!(ssl::SSLStream, host) = ssl_set_host(ssl.ssl, host)
@@ -591,7 +557,7 @@ function Base.eof(ssl::SSLStream)::Bool
         while isreadable(ssl) && bytesavailable(ssl) <= 0
             # no immediate pending bytes, so let's check underlying socket
             if !haspending(ssl)
-                if eof(ssl.bio_read_stream.io) && !haspending(ssl)
+                if eof(ssl.io) && !haspending(ssl)
                     return true
                 end
             end
@@ -603,7 +569,7 @@ function Base.eof(ssl::SSLStream)::Bool
 end
 
 Base.isreadable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_received))
-Base.iswritable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_sent)) && isopen(ssl.bio_write_stream.io)
+Base.iswritable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_sent)) && isopen(ssl.io)
 Base.isopen(ssl::SSLStream)::Bool = iswritable(ssl)
 isclosed(ssl::SSLStream) = ssl.ssl.ssl == C_NULL
 
@@ -618,20 +584,9 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
         # Ignore the disconnect result.
         shutdown && ssl_disconnect(ssl.ssl)
 
-        # SSL_free() also calls the free()ing procedures for indirectly affected items, 
-        # if applicable: the buffering BIO, the read and write BIOs, 
-        # cipher lists specially created for this ssl, the SSL_SESSION.
-        ssl.bio_read_stream.bio.bio = C_NULL
-        ssl.bio_write_stream.bio.bio = C_NULL
-
         # close underlying read/write streams
         try
-            Base.close(ssl.bio_read_stream.io)
-        catch e
-            e isa Base.IOError || rethrow()
-        end
-        try
-            Base.close(ssl.bio_write_stream.io)
+            Base.close(ssl.io)
         catch e
             e isa Base.IOError || rethrow()
         end

@@ -1410,7 +1410,7 @@ mutable struct BIO
         Creates a BIO object using IO stream method.
         The BIO object is not registered with the finalizer.
     """
-    function BIO()
+    function BIO(data=nothing; finalize::Bool=true)
         bio = ccall(
             (:BIO_new, libcrypto),
             Ptr{Cvoid},
@@ -1421,15 +1421,28 @@ mutable struct BIO
         end
 
         bio = new(bio)
-        finalizer(free, bio)
+        finalize && finalizer(free, bio)
 
+        # note that `data` must be held as a reference somewhere else
+        # since it is not referenced by the BIO directly
+        # e.g. in SSLStream, we keep the `io` reference that is passed to
+        # the read/write BIOs
         ccall(
             (:BIO_set_data, libcrypto),
             Cvoid,
             (BIO, Ptr{Cvoid}),
             bio,
-            C_NULL)
+            data === nothing ? C_NULL : pointer_from_objref(data))
 
+        # Set BIO as non-blocking
+        ccall(
+            (:BIO_ctrl, libcrypto),
+            Cint,
+            (BIO, Cint, Cint, Ptr{Cvoid}),
+            bio,
+            102,
+            1,
+            C_NULL)
         # Mark BIO as initalized.
         ccall(
             (:BIO_set_init, libcrypto),
