@@ -148,19 +148,28 @@ mutable struct SSLContext
             Cint,
             (SSLContext, Cint, Clong, Ptr{Cvoid}),
             ssl_context, 33, SSL_MODE_AUTO_RETRY, C_NULL)
-
         if !isempty(verify_file)
-            ccall(
+            @assert ccall(
                 (:SSL_CTX_load_verify_locations, libssl),
                 Cint,
                 (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
                 ssl_context,
                 verify_file,
-                C_NULL)
+                C_NULL) == 1
         end
 
         return ssl_context
     end
+end
+
+function ca_chain!(ssl_context::SSLContext, cacert::String)
+    ccall(
+        (:SSL_CTX_load_verify_locations, libssl),
+        Cint,
+        (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
+        ssl_context,
+        cacert,
+        C_NULL)
 end
 
 function free(ssl_context::SSLContext)
@@ -450,7 +459,7 @@ function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UIn
     end
 end
 
-function Sockets.connect(ssl::SSLStream)
+function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
     while true
         check_isopen(ssl, "connect")
         ret = geterror(ssl) do
@@ -467,6 +476,24 @@ function Sockets.connect(ssl::SSLStream)
         end
     end
 
+    # Check the certificate.
+    if require_ssl_verification
+        if (ret = ccall(
+            (:SSL_get_verify_result, libssl),
+            Cint,
+            (SSL,),
+            ssl.ssl)) != 0
+            throw(OpenSSLError(unsafe_string(ccall(
+                (:X509_verify_cert_error_string, libcrypto),
+                Ptr{UInt8},
+                (Cint,),
+                ret))))
+        end
+        # get peer certificate
+        cert = get_peer_certificate(ssl)
+        cert === nothing && throw(OpenSSLError("No peer certificate"))
+    end
+
     # set read ahead
     ccall(
         (:SSL_set_read_ahead, libssl),
@@ -477,7 +504,20 @@ function Sockets.connect(ssl::SSLStream)
     return
 end
 
-hostname!(ssl::SSLStream, host) = ssl_set_host(ssl.ssl, host)
+const SSL_CTRL_SET_TLSEXT_HOSTNAME = 55
+const TLSEXT_NAMETYPE_host_name = 0
+
+function hostname!(ssl::SSLStream, host)
+    # SSL_set_tlsext_host_name
+    if (ret = ccall(
+        (:SSL_ctrl, libssl),
+        Cint,
+        (SSL, Cint, Clong, Cstring),
+        ssl.ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, host)) != 1
+        throw(OpenSSLError(get_error()))
+    end
+    ssl_set_host(ssl.ssl, host)
+end
 
 function Sockets.accept(ssl::SSLStream)
     ssl_accept(ssl.ssl)
