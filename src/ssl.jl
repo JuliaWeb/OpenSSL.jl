@@ -22,23 +22,29 @@ const BIO_FLAGS_READ = 0x01
 const BIO_FLAGS_WRITE = 0x02
 const BIO_FLAGS_IO_SPECIAL = 0x04
 
+function bio_set_flags(bio::BIO, flags)
+    return ccall(
+        (:BIO_set_flags, libcrypto),
+        Cint,
+        (BIO, Cint),
+        bio, flags)
+end
+bio_set_read_retry(bio::BIO) = bio_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
+bio_clear_flags(bio::BIO) = bio_set_flags(bio, 0x00)
+
 function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
     try
+        bio_clear_flags(bio)
         io = bio_get_data(bio)
         n = bytesavailable(io)
         if n == 0
-            ccall(
-                (:BIO_set_flags, libcrypto),
-                Cint,
-                (BIO, Cint),
-                bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
+            bio_set_read_retry(bio)
             return Cint(0)
         end
         outlen = min(outlen, n)
         unsafe_read(io, out, outlen)
         return Cint(outlen)
     catch e
-        @show e
         # we don't want to throw a Julia exception from a C callback
         return Cint(0)
     end
