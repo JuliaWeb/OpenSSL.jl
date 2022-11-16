@@ -536,15 +536,18 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
     nread = 0
     while nread < nbytes
         (!isopen(ssl) || eof(ssl)) && throw(EOFError())
-        nread += geterror(ssl) do
+        readbytes = Ref{Csize_t}()
+        geterror(ssl) do
             ccall(
-                (:SSL_read, libssl),
+                (:SSL_read_ex, libssl),
                 Cint,
-                (SSL, Ptr{Int8}, Cint),
+                (SSL, Ptr{Int8}, Csize_t, Ptr{Csize_t}),
                 ssl.ssl,
                 buf + nread,
-                nbytes - nread)
+                nbytes - nread,
+                readbytes)
         end
+        nread += readbytes[]
     end
     return nread
 end
