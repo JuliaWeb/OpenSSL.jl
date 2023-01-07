@@ -398,6 +398,7 @@ mutable struct SSLStream <: IO
     wbio::BIO
     io::TCPSocket
     lock::ReentrantLock
+    readbytes::Base.RefValue{Csize_t}
 @static if VERSION < v"1.7"
     close_notify_received::Threads.Atomic{Bool}
     closed::Threads.Atomic{Bool}
@@ -413,9 +414,9 @@ end
         ssl = SSL(ssl_context, bio_read, bio_write)
 
 @static if VERSION < v"1.7"
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
 else
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), false, false)
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), false, false)
 end
     end
 end
@@ -534,7 +535,7 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
     nread = 0
     while nread < nbytes
         (!isopen(ssl) || eof(ssl)) && throw(EOFError())
-        readbytes = Ref{Csize_t}()
+        readbytes = ssl.readbytes
         @geterror ccall(
             (:SSL_read_ex, libssl),
             Cint,
