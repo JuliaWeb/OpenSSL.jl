@@ -35,15 +35,14 @@ bio_clear_flags(bio::BIO) = bio_set_flags(bio, 0x00)
 function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
     try
         bio_clear_flags(bio)
-        io = bio_get_data(bio)
+        io = bio_get_data(bio)::TCPSocket
         n = bytesavailable(io)
         if n == 0
             bio_set_read_retry(bio)
             return Cint(0)
         end
-        outlen = min(outlen, n)
-        unsafe_read(io, out, outlen)
-        return Cint(outlen)
+        unsafe_read(io, out, min(UInt(n), outlen))
+        return Cint(min(n, outlen))
     catch e
         # we don't want to throw a Julia exception from a C callback
         return Cint(0)
@@ -639,7 +638,7 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
         end
         finalize(ssl.ssl)
     end
-    return 
+    return
 end
 
 """
