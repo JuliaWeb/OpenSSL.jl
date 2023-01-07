@@ -41,9 +41,8 @@ function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
             bio_set_read_retry(bio)
             return Cint(0)
         end
-        outlen = min(outlen, n)
-        unsafe_read(io, out, outlen)
-        return Cint(outlen)
+        unsafe_read(io, out, min(UInt(n), outlen))
+        return Cint(min(n, outlen))
     catch e
         # we don't want to throw a Julia exception from a C callback
         return Cint(0)
