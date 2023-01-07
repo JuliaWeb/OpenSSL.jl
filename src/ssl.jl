@@ -455,7 +455,7 @@ end
 
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
     check_isopen(ssl, "unsafe_write")
-    return @geterror ccall(
+    @geterror ccall(
         (:SSL_write, libssl),
         Cint,
         (SSL, Ptr{Cvoid}, Cint),
@@ -463,6 +463,7 @@ function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UIn
         in_buffer,
         in_length
     )
+    return ret
 end
 
 function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
