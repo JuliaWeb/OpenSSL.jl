@@ -1,3 +1,29 @@
+# atomic compat macros
+macro atomicget(ex)
+    @static if VERSION < v"1.7"
+        return esc(Expr(:ref, ex))
+    else
+        return esc(:(@atomic $ex))
+    end
+end
+
+macro atomicset(ex)
+    @static if VERSION < v"1.7"
+        ex.args[1] = Expr(:ref, ex.args[1])
+        return esc(ex)
+    else
+        return esc(:(@atomic $ex))
+    end
+end
+
+macro atomicmod(ex)
+    @static if VERSION < v"1.7"
+        return esc(:(Threads.atomic_xchg!($(ex.args[1]), $(ex.args[2]))))
+    else
+        return esc(:(@atomicswap :monotonic $ex))
+    end
+end
+
 """
     BIO Stream callbacks.
 """
@@ -369,31 +395,6 @@ function get_error(ssl::SSL, ret::Cint)::SSLErrorCode
         (SSL, Cint),
         ssl,
         ret)
-end
-
-macro atomicget(ex)
-    @static if VERSION < v"1.7"
-        return esc(Expr(:ref, ex))
-    else
-        return esc(:(@atomic $ex))
-    end
-end
-
-macro atomicset(ex)
-    @static if VERSION < v"1.7"
-        ex.args[1] = Expr(:ref, ex.args[1])
-        return esc(ex)
-    else
-        return esc(:(@atomic $ex))
-    end
-end
-
-macro atomicmod(ex)
-    @static if VERSION < v"1.7"
-        return esc(:(Threads.atomic_xchg!($(ex.args[1]), $(ex.args[2]))))
-    else
-        return esc(:(@atomicswap :monotonic $ex))
-    end
 end
 
 """
