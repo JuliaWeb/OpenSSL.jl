@@ -178,14 +178,14 @@ function ca_chain!(ssl_context::SSLContext, cacert::String)
 end
 
 function free(ssl_context::SSLContext)
-    ssl_context.ssl_ctx == C_NULL && return
-    ccall(
-        (:SSL_CTX_free, libssl),
-        Cvoid,
-        (SSLContext,),
-        ssl_context)
-
-    ssl_context.ssl_ctx = C_NULL
+    prev = @atomicmod ssl_context.ssl_ctx = C_NULL
+    if prev != C_NULL
+        ccall(
+            (:SSL_CTX_free, libssl),
+            Cvoid,
+            (SSLContext,),
+            ssl_context)
+    end
     return
 end
 
@@ -303,14 +303,14 @@ mutable struct SSL
 end
 
 function free(ssl::SSL)
-    ssl.ssl == C_NULL && return
-    ccall(
-        (:SSL_free, libssl),
-        Cvoid,
-        (SSL,),
-        ssl)
-
-    ssl.ssl = C_NULL
+    prev = @atomicmod ssl.ssl = C_NULL
+    if prev != C_NULL
+        ccall(
+            (:SSL_free, libssl),
+            Cvoid,
+            (SSL,),
+            ssl)
+    end
     return
 end
 
@@ -385,6 +385,14 @@ macro atomicset(ex)
         return esc(ex)
     else
         return esc(:(@atomic $ex))
+    end
+end
+
+macro atomicmod(ex)
+    @static if VERSION < v"1.7"
+        return esc(:(Threads.atomic_xchg!($(ex.args[1]), $(ex.args[2]))))
+    else
+        return esc(:(@atomicswap :monotonic $ex))
     end
 end
 
@@ -594,6 +602,11 @@ function Base.eof(ssl::SSLStream)::Bool
                 if eof(ssl.io) && !haspending(ssl)
                     # if eof and there are no pending, then we are eof
                     return true
+                elseif !haspending(ssl)
+                    # it shouldn't be possible to get here
+                    # but in case we do, loop back around
+                    # because we don't want to peek if there are no pending
+                    continue
                 end
             end
             # if we're here, we know there are unprocessed bytes,
