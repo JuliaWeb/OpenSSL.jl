@@ -2931,15 +2931,19 @@ function get_error()::String
     # Read the formatted error messages from the memory BIO.
 
     # Ensure the queue is clear (if ERR_print_errors fails).
-    ccall(
-        (:ERR_clear_error, libcrypto),
-        Cvoid,
-        ())
+    clear_errors!()
 
     # Free bio.
     free(bio)
 
     return error_msg
+end
+
+function clear_errors!()
+    ccall(
+        (:ERR_clear_error, libcrypto),
+        Cvoid,
+        ())
 end
 
 function OpenSSLError(ret::Integer)

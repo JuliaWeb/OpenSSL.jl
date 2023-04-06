@@ -288,7 +288,6 @@ mutable struct SSL
         end
 
         ssl = new(ssl)
-        finalizer(free, ssl)
 
         ccall(
             (:SSL_set_bio, libssl),
@@ -375,7 +374,7 @@ macro atomicget(ex)
     @static if VERSION < v"1.7"
         return esc(Expr(:ref, ex))
     else
-        return esc(:(@atomic $ex))
+        return esc(:(@atomic :acquire $ex))
     end
 end
 
@@ -384,7 +383,7 @@ macro atomicset(ex)
         ex.args[1] = Expr(:ref, ex.args[1])
         return esc(ex)
     else
-        return esc(:(@atomic $ex))
+        return esc(:(@atomic :release $ex))
     end
 end
 
@@ -434,6 +433,7 @@ check_isopen(ssl::SSLStream, op) = isopen(ssl) || throw(Base.IOError("$op requir
 
 macro geterror(expr)
     esc(quote
+        clear_errors!()
         ret = $expr
         if ret <= 0
             err = get_error(ssl.ssl, ret)
@@ -534,18 +534,22 @@ end
 function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
     nread = 0
     while nread < nbytes
-        (!isopen(ssl) || eof(ssl)) && throw(EOFError())
+        !isopen(ssl) && throw(EOFError())
         readbytes = ssl.readbytes
         @geterror ccall(
             (:SSL_read_ex, libssl),
             Cint,
-            (SSL, Ptr{Int8}, Csize_t, Ptr{Csize_t}),
+            (SSL, Ptr{UInt8}, Csize_t, Ptr{Csize_t}),
             ssl.ssl,
             buf + nread,
             nbytes - nread,
             readbytes
         )
-        nread += Int(readbytes[])
+        if ret == 1 || ret == SSL_ERROR_NONE
+            nread += Int(readbytes[])
+        else
+            eof(ssl.io) && throw(EOFError())
+        end
     end
     return nread
 end
@@ -564,7 +568,6 @@ function Base.bytesavailable(ssl::SSLStream)::Cint
         Cint,
         (SSL,),
         ssl.ssl)
-    update_tls_error_state()
     return pending_count
 end
 
@@ -575,7 +578,6 @@ function haspending(s::SSLStream)
         Cint,
         (SSL,),
         s.ssl)
-    update_tls_error_state()
     return has_pending == 1
 end
 
@@ -598,14 +600,18 @@ function Base.eof(ssl::SSLStream)::Bool
             end
             # if we're here, we know there are unprocessed bytes,
             # so we call peek to force processing
-            @geterror ccall(
-                (:SSL_peek, libssl),
-                Cint,
-                (SSL, Ref{UInt8}, Cint),
-                ssl.ssl,
-                PEEK_REF,
-                1
-            )
+            byte = Ref{UInt8}(0x00)
+            ptr = Base.unsafe_convert(Ptr{UInt8}, byte)
+            GC.@preserve byte begin
+                @geterror ccall(
+                    (:SSL_peek, libssl),
+                    Cint,
+                    (SSL, Ptr{UInt8}, Cint),
+                    ssl.ssl,
+                    ptr,
+                    1
+                )
+            end
             # if we get WANT_READ back, that means there were pending bytes
             # to be processed, but not a full record, so we need to wait
             # for additional bytes to come in before we can process
@@ -637,7 +643,7 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
         catch e
             e isa Base.IOError || rethrow()
         end
-        finalize(ssl.ssl)
+        free(ssl.ssl)
     end
     return
 end
