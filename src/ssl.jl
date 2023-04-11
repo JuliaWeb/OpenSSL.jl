@@ -288,7 +288,6 @@ mutable struct SSL
         end
 
         ssl = new(ssl)
-        finalizer(free, ssl)
 
         ccall(
             (:SSL_set_bio, libssl),
@@ -375,7 +374,7 @@ macro atomicget(ex)
     @static if VERSION < v"1.7"
         return esc(Expr(:ref, ex))
     else
-        return esc(:(@atomic $ex))
+        return esc(:(@atomic :acquire $ex))
     end
 end
 
@@ -384,7 +383,7 @@ macro atomicset(ex)
         ex.args[1] = Expr(:ref, ex.args[1])
         return esc(ex)
     else
-        return esc(:(@atomic $ex))
+        return esc(:(@atomic :release $ex))
     end
 end
 
@@ -399,6 +398,7 @@ mutable struct SSLStream <: IO
     io::TCPSocket
     lock::ReentrantLock
     readbytes::Base.RefValue{Csize_t}
+    writebytes::Base.RefValue{Csize_t}
 @static if VERSION < v"1.7"
     close_notify_received::Threads.Atomic{Bool}
     closed::Threads.Atomic{Bool}
@@ -414,9 +414,9 @@ end
         ssl = SSL(ssl_context, bio_read, bio_write)
 
 @static if VERSION < v"1.7"
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
 else
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), false, false)
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), false, false)
 end
     end
 end
@@ -432,10 +432,14 @@ Base.isopen(ssl::SSLStream)::Bool = !@atomicget(ssl.closed)
 Base.iswritable(ssl::SSLStream)::Bool = isopen(ssl) && isopen(ssl.io)
 check_isopen(ssl::SSLStream, op) = isopen(ssl) || throw(Base.IOError("$op requires ssl to be open", 0))
 
-macro geterror(expr)
-    esc(quote
-        ret = $expr
-        if ret <= 0
+macro geterror(ssl, expr)
+    quote
+        clear_errors!()
+        ret = $(esc(expr))
+        if ret == 1
+            ret = SSL_ERROR_NONE
+        else
+            ssl = $(esc(ssl))
             err = get_error(ssl.ssl, ret)
             if err == SSL_ERROR_ZERO_RETURN
                 @atomicset ssl.close_notify_received = true
@@ -450,27 +454,35 @@ macro geterror(expr)
                 throw(Base.IOError(OpenSSLError(err).msg, 0))
             end
         end
-    end)
+        ret
+    end
 end
 
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
     check_isopen(ssl, "unsafe_write")
-    @geterror ccall(
-        (:SSL_write, libssl),
-        Cint,
-        (SSL, Ptr{Cvoid}, Cint),
-        ssl.ssl,
-        in_buffer,
-        in_length
-    )
-    return ret
+    nwritten = 0
+    while nwritten < in_length
+        ret = @geterror ssl ccall(
+            (:SSL_write_ex, libssl),
+            Cint,
+            (SSL, Ptr{Cvoid}, Cint, Ptr{Csize_t}),
+            ssl.ssl,
+            in_buffer,
+            in_length,
+            ssl.writebytes
+        )
+        if ret == SSL_ERROR_NONE
+            nwritten += ssl.writebytes[]
+        end
+    end
+    return Base.bitcast(Int, in_length)
 end
 
 function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
     while true
         check_isopen(ssl, "connect")
-        @geterror ssl_connect(ssl.ssl)
-        if (ret == 1 || ret == SSL_ERROR_NONE)
+        ret = @geterror ssl ssl_connect(ssl.ssl)
+        if ret == SSL_ERROR_NONE
             break
         elseif ret == SSL_ERROR_WANT_READ
             if eof(ssl.io)
@@ -534,18 +546,24 @@ end
 function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
     nread = 0
     while nread < nbytes
-        (!isopen(ssl) || eof(ssl)) && throw(EOFError())
+        # If open, optimistically call `SSL_read_ex` to try to save an `eof` call;
+        # if that returns `SSL_WANT_READ` we will call `eof` anyway afterwards.
+        !isopen(ssl) && throw(EOFError())
         readbytes = ssl.readbytes
-        @geterror ccall(
+        ret = @geterror ssl ccall(
             (:SSL_read_ex, libssl),
             Cint,
-            (SSL, Ptr{Int8}, Csize_t, Ptr{Csize_t}),
+            (SSL, Ptr{UInt8}, Csize_t, Ptr{Csize_t}),
             ssl.ssl,
             buf + nread,
             nbytes - nread,
             readbytes
         )
-        nread += Int(readbytes[])
+        if ret == SSL_ERROR_NONE
+            nread += Base.bitcast(Int, readbytes[])
+        else
+            eof(ssl.io) && throw(EOFError())
+        end
     end
     return nread
 end
@@ -564,7 +582,6 @@ function Base.bytesavailable(ssl::SSLStream)::Cint
         Cint,
         (SSL,),
         ssl.ssl)
-    update_tls_error_state()
     return pending_count
 end
 
@@ -575,11 +592,8 @@ function haspending(s::SSLStream)
         Cint,
         (SSL,),
         s.ssl)
-    update_tls_error_state()
     return has_pending == 1
 end
-
-const PEEK_REF = Ref{UInt8}(0x00)
 
 function Base.eof(ssl::SSLStream)::Bool
     bytesavailable(ssl) > 0 && return false
@@ -598,14 +612,18 @@ function Base.eof(ssl::SSLStream)::Bool
             end
             # if we're here, we know there are unprocessed bytes,
             # so we call peek to force processing
-            @geterror ccall(
-                (:SSL_peek, libssl),
-                Cint,
-                (SSL, Ref{UInt8}, Cint),
-                ssl.ssl,
-                PEEK_REF,
-                1
-            )
+            byte = Ref{UInt8}(0x00)
+            ptr = Base.unsafe_convert(Ptr{UInt8}, byte)
+            GC.@preserve byte begin
+                ret = @geterror ssl ccall(
+                    (:SSL_peek, libssl),
+                    Cint,
+                    (SSL, Ptr{UInt8}, Cint),
+                    ssl.ssl,
+                    ptr,
+                    1
+                )
+            end
             # if we get WANT_READ back, that means there were pending bytes
             # to be processed, but not a full record, so we need to wait
             # for additional bytes to come in before we can process
@@ -637,7 +655,7 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
         catch e
             e isa Base.IOError || rethrow()
         end
-        finalize(ssl.ssl)
+        free(ssl.ssl)
     end
     return
 end
