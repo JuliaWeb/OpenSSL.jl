@@ -556,6 +556,8 @@ end
 function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
     nread = 0
     while nread < nbytes
+        # If open, optimistically call `SSL_read_ex` to try to save an `eof` call;
+        # if that returns `SSL_WANT_READ` we will call `eof` anyway afterwards.
         !isopen(ssl) && throw(EOFError())
         readbytes = ssl.readbytes
         @geterror ccall(
