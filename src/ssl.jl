@@ -398,6 +398,7 @@ mutable struct SSLStream <: IO
     io::TCPSocket
     lock::ReentrantLock
     readbytes::Base.RefValue{Csize_t}
+    writebytes::Base.RefValue{Csize_t}
 @static if VERSION < v"1.7"
     close_notify_received::Threads.Atomic{Bool}
     closed::Threads.Atomic{Bool}
@@ -413,9 +414,9 @@ end
         ssl = SSL(ssl_context, bio_read, bio_write)
 
 @static if VERSION < v"1.7"
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
 else
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), false, false)
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), false, false)
 end
     end
 end
@@ -435,7 +436,9 @@ macro geterror(ssl, expr)
     quote
         clear_errors!()
         ret = $(esc(expr))
-        if ret <= 0
+        if ret == 1
+            ret = SSL_ERROR_NONE
+        else
             ssl = $(esc(ssl))
             err = get_error(ssl.ssl, ret)
             if err == SSL_ERROR_ZERO_RETURN
@@ -454,45 +457,32 @@ macro geterror(ssl, expr)
         ret
     end
 end
-    esc(quote
-        clear_errors!()
-        ret = $expr
-        if ret <= 0
-            err = get_error(ssl.ssl, ret)
-            if err == SSL_ERROR_ZERO_RETURN
-                @atomicset ssl.close_notify_received = true
-            elseif err == SSL_ERROR_NONE
-                # pass
-            elseif err == SSL_ERROR_WANT_READ
-                ret = SSL_ERROR_WANT_READ
-            elseif err == SSL_ERROR_WANT_WRITE
-                ret = SSL_ERROR_WANT_WRITE
-            else
-                close(ssl, false)
-                throw(Base.IOError(OpenSSLError(err).msg, 0))
-            end
-        end
-    end)
-end
 
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
     check_isopen(ssl, "unsafe_write")
-    @geterror ccall(
-        (:SSL_write, libssl),
-        Cint,
-        (SSL, Ptr{Cvoid}, Cint),
-        ssl.ssl,
-        in_buffer,
-        in_length
-    )
-    return ret
+    nwritten = 0
+    while nwritten < in_length
+        ret = @geterror ssl ccall(
+            (:SSL_write_ex, libssl),
+            Cint,
+            (SSL, Ptr{Cvoid}, Cint, Ptr{Csize_t}),
+            ssl.ssl,
+            in_buffer,
+            in_length,
+            ssl.writebytes
+        )
+        if ret == SSL_ERROR_NONE
+            nwritten += ssl.writebytes[]
+        end
+    end
+    return Base.bitcast(Int, in_length)
 end
 
 function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
     while true
         check_isopen(ssl, "connect")
-        @geterror ssl_connect(ssl.ssl)
-        if (ret == 1 || ret == SSL_ERROR_NONE)
+        ret = @geterror ssl ssl_connect(ssl.ssl)
+        if ret == SSL_ERROR_NONE
             break
         elseif ret == SSL_ERROR_WANT_READ
             if eof(ssl.io)
@@ -560,7 +550,7 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
         # if that returns `SSL_WANT_READ` we will call `eof` anyway afterwards.
         !isopen(ssl) && throw(EOFError())
         readbytes = ssl.readbytes
-        @geterror ccall(
+        ret = @geterror ssl ccall(
             (:SSL_read_ex, libssl),
             Cint,
             (SSL, Ptr{UInt8}, Csize_t, Ptr{Csize_t}),
@@ -569,8 +559,8 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
             nbytes - nread,
             readbytes
         )
-        if ret == 1 || ret == SSL_ERROR_NONE
-            nread += Int(readbytes[])
+        if ret == SSL_ERROR_NONE
+            nread += Base.bitcast(Int, readbytes[])
         else
             eof(ssl.io) && throw(EOFError())
         end
@@ -605,8 +595,6 @@ function haspending(s::SSLStream)
     return has_pending == 1
 end
 
-const PEEK_REF = Ref{UInt8}(0x00)
-
 function Base.eof(ssl::SSLStream)::Bool
     bytesavailable(ssl) > 0 && return false
     Base.@lock ssl.lock begin
@@ -627,7 +615,7 @@ function Base.eof(ssl::SSLStream)::Bool
             byte = Ref{UInt8}(0x00)
             ptr = Base.unsafe_convert(Ptr{UInt8}, byte)
             GC.@preserve byte begin
-                @geterror ccall(
+                ret = @geterror ssl ccall(
                     (:SSL_peek, libssl),
                     Cint,
                     (SSL, Ptr{UInt8}, Cint),
