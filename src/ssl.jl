@@ -431,7 +431,29 @@ Base.isopen(ssl::SSLStream)::Bool = !@atomicget(ssl.closed)
 Base.iswritable(ssl::SSLStream)::Bool = isopen(ssl) && isopen(ssl.io)
 check_isopen(ssl::SSLStream, op) = isopen(ssl) || throw(Base.IOError("$op requires ssl to be open", 0))
 
-macro geterror(expr)
+macro geterror(ssl, expr)
+    quote
+        clear_errors!()
+        ret = $(esc(expr))
+        if ret <= 0
+            ssl = $(esc(ssl))
+            err = get_error(ssl.ssl, ret)
+            if err == SSL_ERROR_ZERO_RETURN
+                @atomicset ssl.close_notify_received = true
+            elseif err == SSL_ERROR_NONE
+                # pass
+            elseif err == SSL_ERROR_WANT_READ
+                ret = SSL_ERROR_WANT_READ
+            elseif err == SSL_ERROR_WANT_WRITE
+                ret = SSL_ERROR_WANT_WRITE
+            else
+                close(ssl, false)
+                throw(Base.IOError(OpenSSLError(err).msg, 0))
+            end
+        end
+        ret
+    end
+end
     esc(quote
         clear_errors!()
         ret = $expr
