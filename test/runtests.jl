@@ -175,7 +175,7 @@ end
 end
 
 @testset "HttpsConnect" begin
-    tcp_stream = connect("www.nghttp2.org", 443)
+    tcp_stream = connect("httpbingo.julialang.org", 443)
 
     ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod())
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
@@ -183,15 +183,14 @@ end
     # Create SSL stream.
     ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
 
-    #TODO expose connect
     OpenSSL.connect(ssl)
 
     x509_server_cert = OpenSSL.get_peer_certificate(ssl)
 
     @test String(x509_server_cert.issuer_name) == "/C=US/O=Let's Encrypt/CN=R3"
-    @test String(x509_server_cert.subject_name) == "/CN=nghttp2.org"
+    @test String(x509_server_cert.subject_name) == "/CN=httpbingo.julialang.org"
 
-    request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
+    request_str = "GET /status/200 HTTP/1.1\r\nHost: httpbingo.julialang.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
 
     written = write(ssl, request_str)
 
@@ -201,8 +200,18 @@ end
     write(io, readavailable(ssl))
     response = String(take!(io))
     @test startswith(response, "HTTP/1.1 200 OK\r\n")
-    close(ssl)
+    sleep(2)
+    @test isempty(readavailable(ssl))
+    # start a bunch of tasks all racing to call eof
+    tasks = [@async(eof(ssl)) for _ = 1:100]
+    yield()
+    @test all(t -> !istaskdone(t), tasks)
+    closetasks = [@async(close(ssl)) for _ = 1:100]
+    yield()
+    sleep(2)
     finalize(ssl_ctx)
+    @test all(t -> istaskdone(t), tasks)
+    @test all(t -> istaskdone(t), closetasks)
 end
 
 @testset "ClosedStream" begin
