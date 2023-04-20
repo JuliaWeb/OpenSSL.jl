@@ -519,6 +519,21 @@ else
     const EVP_CIPHER_CTX_iv_length = :EVP_CIPHER_CTX_iv_length
 end
 
+# Locate oss-modules, which contains legacy shared library
+function _ossl_modules_path()
+    @static if Sys.iswindows()
+        bin_dir = dirname(OpenSSL_jll.libssl_path)
+        lib_dir = joinpath(dirname(bin_dir), "lib")
+        if Sys.WORD == 64
+            return joinpath(lib_dir * "64", "ossl-modules")
+        else
+            return joinpath(lib_dir, "ossl-modules")
+        end
+    else
+        return joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules")
+    end
+end
+
 """
     ossl_provider_set_default_search_path([libctx], [path])
 
@@ -531,7 +546,7 @@ OpenSSL v3 is used.
 
 !!! compat "OpenSSL v3" `ossl_provider_set_default_search_path` is only available with version 3 of the OpenSSL_jll
 """
-function ossl_provider_set_default_search_path(libctx = C_NULL, path = joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules"))
+function ossl_provider_set_default_search_path(libctx = C_NULL, path = _ossl_modules_path())
     result = ccall(
         (:OSSL_PROVIDER_set_default_search_path, libcrypto),
         Cint,
