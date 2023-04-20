@@ -484,24 +484,16 @@ Return the version number of the OpenSSL C library.
 This uses `OpenSSL_version_num()`.
 """
 function version_number()
-    @static if Sys.iswindows()
-        # Windows cannot find OpenSSL_version_num symbol ??
-        m = match(r"OpenSSL (\d+)\.(\d+)\.(\d+)", version())
-        major = parse(Int, m[1])
-        minor = parse(Int, m[2])
-        patch = parse(Int, m[3])
-    else
-        # This works on OpenSSL v1.1
-        vn = ccall((:OpenSSL_version_num, libssl), Culong, ())
+    # This works on OpenSSL v1.1
+    vn = ccall((:OpenSSL_version_num, libcrypto), Culong, ())
 
-        # 0xMNN00PP0L
-        # M: major
-        # NN: minor
-        # PP: patch
-        major = vn >> 28
-        minor = vn >> 20 & 0xff
-        patch = vn >> 4 & 0xff
-    end
+    # 0xMNN00PP0L
+    # M: major
+    # NN: minor
+    # PP: patch
+    major = vn >> 28
+    minor = vn >> 20 & 0xff
+    patch = vn >> 4 & 0xff
 
     return VersionNumber(major, minor, patch)
 end
@@ -540,21 +532,15 @@ OpenSSL v3 is used.
 !!! compat "OpenSSL v3" `ossl_provider_set_default_search_path` is only available with version 3 of the OpenSSL_jll
 """
 function ossl_provider_set_default_search_path(libctx = C_NULL, path = joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules"))
-    @static if Sys.iswindows()
-        # TODO: Figure out why OSSL_PROVIDER_set_default_search_path is missing
-        ENV["OPENSSL_MODULES"] = joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules")
-        result = 1
-    else
-        result = ccall(
-            (:OSSL_PROVIDER_set_default_search_path, libssl),
-            Cint,
-            (Ptr{Nothing}, Cstring),
-            libctx,
-            path
-        )
-        if result == 0
-            throw(OpenSSLError())
-        end
+    result = ccall(
+        (:OSSL_PROVIDER_set_default_search_path, libcrypto),
+        Cint,
+        (Ptr{Nothing}, Cstring),
+        libctx,
+        path
+    )
+    if result == 0
+        throw(OpenSSLError())
     end
     return result
 end
@@ -569,7 +555,7 @@ global context.
 """
 function load_provider(libctx, provider_name)
     result = ccall(
-        (:OSSL_PROVIDER_load, libssl),
+        (:OSSL_PROVIDER_load, libcrypto),
         Ptr{Nothing},
         (Ptr{Nothing}, Cstring),
         libctx,
