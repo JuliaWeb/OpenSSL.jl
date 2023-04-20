@@ -607,12 +607,20 @@ end
 @testset "VersionNumber" begin
     vn = OpenSSL.version_number()
     @test vn ≥ v"1.1"
+
+    m = match(r"OpenSSL (\d+)\.(\d+)\.(\d+)", OpenSSL.version())
+    major = parse(Int, m[1])
+    minor = parse(Int, m[2])
+    patch = parse(Int, m[3])
+    vn2 = VersionNumber(major, minor, patch)
+    @test vn == vn2
+
     if vn ≥ v"3"
         # These only work with OpenSSL v3
         major = ccall((:OPENSSL_version_major, libcrypto), Cuint, ())
         minor = ccall((:OPENSSL_version_minor, libcrypto), Cuint, ())
         patch = ccall((:OPENSSL_version_patch, libcrypto), Cuint, ())
-        vn2 = VersionNumber(major, minor, patch)
-        @test vn == vn2
+        vn3 = VersionNumber(major, minor, patch)
+        @test vn == vn3
     end
 end
