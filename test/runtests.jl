@@ -613,7 +613,13 @@ end
     minor = parse(Int, m[2])
     patch = parse(Int, m[3])
     vn2 = VersionNumber(major, minor, patch)
-    @test vn == vn2
+    if vn < v"3"
+        # OpenSSL v1.1 uses non-conventional version numbers
+        @test vn.major == vn2.major
+        @test vn.minor == vn2.minor
+    else
+        @test vn == vn2
+    end
 
     if vn ≥ v"3"
         # These only work with OpenSSL v3
