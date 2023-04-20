@@ -38,7 +38,6 @@ const Option{T} = Union{Nothing,T} where {T}
 const HTTP2_ALPN = "\x02h2"
 const UPDATE_HTTP2_ALPN = "\x02h2\x08http/1.1"
 
-
 """
     These are used in the following macros and are passed to BIO_ctrl().
 """
