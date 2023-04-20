@@ -540,15 +540,21 @@ OpenSSL v3 is used.
 !!! compat "OpenSSL v3" `ossl_provider_set_default_search_path` is only available with version 3 of the OpenSSL_jll
 """
 function ossl_provider_set_default_search_path(libctx = C_NULL, path = joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules"))
-    result = ccall(
-        (:OSSL_PROVIDER_set_default_search_path, libssl),
-        Cint,
-        (Ptr{Nothing}, Cstring),
-        libctx,
-        path
-    )
-    if result == 0
-        throw(OpenSSLError())
+    @static if Sys.iswindows()
+        # TODO: Figure out why OSSL_PROVIDER_set_default_search_path is missing
+        ENV["OPENSSL_MODULES"] = joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules")
+        result = 1
+    else
+        result = ccall(
+            (:OSSL_PROVIDER_set_default_search_path, libssl),
+            Cint,
+            (Ptr{Nothing}, Cstring),
+            libctx,
+            path
+        )
+        if result == 0
+            throw(OpenSSLError())
+        end
     end
     return result
 end
