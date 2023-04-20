@@ -41,7 +41,9 @@ jobs:
           using Pkg
           try
             # Force downstream tests to use this PR's version of the package.
-            Pkg.add(PackageSpec(name="OpenSSL_jll", version="1.1"))
+            spec = PackageSpec(name="OpenSSL_jll", version="1.1")
+            Pkg.add(spec)
+            Pkg.pin(spec)
             Pkg.develop(PackageSpec(path="."))  # resolver may fail with main deps
             Pkg.update()
             Pkg.test()  # resolver may fail with test time deps

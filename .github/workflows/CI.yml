@@ -62,7 +62,9 @@ jobs:
         run: |
           using Pkg
           try
-            Pkg.add(PackageSpec(name="OpenSSL_jll", version="1.1"))
+            spec = PackageSpec(name="OpenSSL_jll", version="1.1")
+            Pkg.add(spec)
+            Pkg.pin(spec)
             Pkg.develop(PackageSpec(path="."))
             Pkg.test("OpenSSL")  # resolver may fail with test time deps
           catch err
