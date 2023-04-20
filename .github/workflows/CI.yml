@@ -64,7 +64,7 @@ jobs:
           try
             Pkg.add(PackageSpec(name="OpenSSL_jll", version="1.1"))
             Pkg.develop(PackageSpec(path="."))
-            Pkg.test()  # resolver may fail with test time deps
+            Pkg.test("OpenSSL")  # resolver may fail with test time deps
           catch err
             err isa Pkg.Resolve.ResolverError || rethrow()
             # If we can't resolve that means this is incompatible by SemVer and this is fine;
