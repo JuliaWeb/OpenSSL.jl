@@ -609,9 +609,9 @@ end
     @test vn ≥ v"1.1"
     if vn ≥ v"3"
         # These only work with OpenSSL v3
-        major = ccall((:OPENSSL_version_major, libssl), Cuint, ())
-        minor = ccall((:OPENSSL_version_minor, libssl), Cuint, ())
-        patch = ccall((:OPENSSL_version_patch, libssl), Cuint, ())
+        major = ccall((:OPENSSL_version_major, libcrypto), Cuint, ())
+        minor = ccall((:OPENSSL_version_minor, libcrypto), Cuint, ())
+        patch = ccall((:OPENSSL_version_patch, libcrypto), Cuint, ())
         vn2 = VersionNumber(major, minor, patch)
         @test vn == vn2
     end
