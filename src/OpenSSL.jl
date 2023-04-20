@@ -38,116 +38,6 @@ const Option{T} = Union{Nothing,T} where {T}
 const HTTP2_ALPN = "\x02h2"
 const UPDATE_HTTP2_ALPN = "\x02h2\x08http/1.1"
 
-"""
-    version_number()::VersionNumber
-
-Return the version number of the OpenSSL C library.
-This uses `OpenSSL_version_num()`.
-"""
-function version_number()
-    @static if Sys.iswindows()
-        # Windows cannot find OpenSSL_version_num symbol ??
-        m = match(r"OpenSSL (\d+)\.(\d+)\.(\d+)", OpenSSL.version())
-        major = parse(Int, m[1])
-        minor = parse(Int, m[2])
-        patch = parse(Int, m[3])
-    else
-        # This works on OpenSSL v1.1
-        vn = ccall((:OpenSSL_version_num, libssl), Culong, ())
-
-        # 0xMNN00PP0L
-        # M: major
-        # NN: minor
-        # PP: patch
-        major = vn >> 28
-        minor = vn >> 20 & 0xff
-        patch = vn >> 4 & 0xff
-    end
-
-    return VersionNumber(major, minor, patch)
-end
-
-@static if version_number() ≥ v"3"
-    # In OpenSSL v3, macros redirect these symbols
-    const SSL_get_peer_certificate = :SSL_get1_peer_certificate
-    const EVP_PKEY_base_id = :EVP_PKEY_get_base_id
-    const EVP_CIPHER_key_length = :EVP_CIPHER_get_key_length
-    const EVP_CIPHER_iv_length = :EVP_CIPHER_get_iv_length
-    const EVP_CIPHER_block_size = :EVP_CIPHER_get_block_size
-    const EVP_CIPHER_CTX_block_size = :EVP_CIPHER_CTX_get_block_size
-    const EVP_CIPHER_CTX_key_length = :EVP_CIPHER_CTX_get_key_length
-    const EVP_CIPHER_CTX_iv_length = :EVP_CIPHER_CTX_get_iv_length
-else
-    const SSL_get_peer_certificate = :SSL_get_peer_certificate
-    const EVP_PKEY_base_id = :EVP_PKEY_base_id
-    const EVP_CIPHER_key_length = :EVP_CIPHER_key_length
-    const EVP_CIPHER_iv_length = :EVP_CIPHER_iv_length
-    const EVP_CIPHER_block_size = :EVP_CIPHER_block_size
-    const EVP_CIPHER_CTX_block_size = :EVP_CIPHER_CTX_block_size
-    const EVP_CIPHER_CTX_key_length = :EVP_CIPHER_CTX_key_length
-    const EVP_CIPHER_CTX_iv_length = :EVP_CIPHER_CTX_iv_length
-end
-
-"""
-    ossl_provider_set_default_search_path([libctx], [path])
-
-Set the default search path for providers. If no arguments are given,
-the global context will be configured for the ossl-modules directory
-in the OpenSSL_jll artifact.
-
-This is called with no arguments in OpenSSL.jl `__init__` when
-OpenSSL v3 is used.
-
-!!! compat "OpenSSL v3" `ossl_provider_set_default_search_path` is only available with version 3 of the OpenSSL_jll
-"""
-function ossl_provider_set_default_search_path(libctx = C_NULL, path = joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules"))
-    result = ccall(
-        (:OSSL_PROVIDER_set_default_search_path, libssl),
-        Cint,
-        (Ptr{Nothing}, Cstring),
-        libctx,
-        path
-    )
-    if result == 0
-        throw(OpenSSLError())
-    end
-    return result
-end
-
-"""
-    load_provider([libctx], provider_name)
-
-Load a provider. If libctx is omitted, the provider will be loaded into the
-global context.
-
-!!! compat "OpenSSL v3" `load_provider` is only available with version 3 of the OpenSSL_jll
-"""
-function load_provider(libctx, provider_name)
-    result = ccall(
-        (:OSSL_PROVIDER_load, libssl),
-        Ptr{Nothing},
-        (Ptr{Nothing}, Cstring),
-        libctx,
-        provider_name
-    )
-    if result == C_NULL
-        throw(OpenSSLError())
-    end
-    return nothing
-end
-load_provider(provider_name) = load_provider(C_NULL, provider_name)
-
-"""
-    load_legacy_provider()
-
-Load the legacy provider. This loads legacy ciphers such as Blowfish.
-
-See https://www.openssl.org/docs/man3.0/man7/OSSL_PROVIDER-legacy.html
-
-!!! compat "OpenSSL v3" `load_legacy_provider` is only available with version 3 of the OpenSSL_jll
-"""
-load_legacy_provider() = load_provider(C_NULL, "legacy")
-
 
 """
     These are used in the following macros and are passed to BIO_ctrl().
@@ -576,6 +466,126 @@ struct OpenSSLError <: Exception
     OpenSSLError(msg::String) = new(msg)
     OpenSSLError(x::SSLErrorCode) = new(string(x))
 end
+
+function version(; version_type::OpenSSLVersion=OPENSSL_VERSION)::String
+    version = ccall(
+        (:OpenSSL_version, libcrypto),
+        Cstring,
+        (Cint,),
+        version_type)
+
+    return unsafe_string(version)
+end
+
+"""
+    version_number()::VersionNumber
+
+Return the version number of the OpenSSL C library.
+This uses `OpenSSL_version_num()`.
+"""
+function version_number()
+    @static if Sys.iswindows()
+        # Windows cannot find OpenSSL_version_num symbol ??
+        m = match(r"OpenSSL (\d+)\.(\d+)\.(\d+)", version())
+        major = parse(Int, m[1])
+        minor = parse(Int, m[2])
+        patch = parse(Int, m[3])
+    else
+        # This works on OpenSSL v1.1
+        vn = ccall((:OpenSSL_version_num, libssl), Culong, ())
+
+        # 0xMNN00PP0L
+        # M: major
+        # NN: minor
+        # PP: patch
+        major = vn >> 28
+        minor = vn >> 20 & 0xff
+        patch = vn >> 4 & 0xff
+    end
+
+    return VersionNumber(major, minor, patch)
+end
+
+@static if version_number() ≥ v"3"
+    # In OpenSSL v3, macros redirect these symbols
+    const SSL_get_peer_certificate = :SSL_get1_peer_certificate
+    const EVP_PKEY_base_id = :EVP_PKEY_get_base_id
+    const EVP_CIPHER_key_length = :EVP_CIPHER_get_key_length
+    const EVP_CIPHER_iv_length = :EVP_CIPHER_get_iv_length
+    const EVP_CIPHER_block_size = :EVP_CIPHER_get_block_size
+    const EVP_CIPHER_CTX_block_size = :EVP_CIPHER_CTX_get_block_size
+    const EVP_CIPHER_CTX_key_length = :EVP_CIPHER_CTX_get_key_length
+    const EVP_CIPHER_CTX_iv_length = :EVP_CIPHER_CTX_get_iv_length
+else
+    const SSL_get_peer_certificate = :SSL_get_peer_certificate
+    const EVP_PKEY_base_id = :EVP_PKEY_base_id
+    const EVP_CIPHER_key_length = :EVP_CIPHER_key_length
+    const EVP_CIPHER_iv_length = :EVP_CIPHER_iv_length
+    const EVP_CIPHER_block_size = :EVP_CIPHER_block_size
+    const EVP_CIPHER_CTX_block_size = :EVP_CIPHER_CTX_block_size
+    const EVP_CIPHER_CTX_key_length = :EVP_CIPHER_CTX_key_length
+    const EVP_CIPHER_CTX_iv_length = :EVP_CIPHER_CTX_iv_length
+end
+
+"""
+    ossl_provider_set_default_search_path([libctx], [path])
+
+Set the default search path for providers. If no arguments are given,
+the global context will be configured for the ossl-modules directory
+in the OpenSSL_jll artifact.
+
+This is called with no arguments in OpenSSL.jl `__init__` when
+OpenSSL v3 is used.
+
+!!! compat "OpenSSL v3" `ossl_provider_set_default_search_path` is only available with version 3 of the OpenSSL_jll
+"""
+function ossl_provider_set_default_search_path(libctx = C_NULL, path = joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules"))
+    result = ccall(
+        (:OSSL_PROVIDER_set_default_search_path, libssl),
+        Cint,
+        (Ptr{Nothing}, Cstring),
+        libctx,
+        path
+    )
+    if result == 0
+        throw(OpenSSLError())
+    end
+    return result
+end
+
+"""
+    load_provider([libctx], provider_name)
+
+Load a provider. If libctx is omitted, the provider will be loaded into the
+global context.
+
+!!! compat "OpenSSL v3" `load_provider` is only available with version 3 of the OpenSSL_jll
+"""
+function load_provider(libctx, provider_name)
+    result = ccall(
+        (:OSSL_PROVIDER_load, libssl),
+        Ptr{Nothing},
+        (Ptr{Nothing}, Cstring),
+        libctx,
+        provider_name
+    )
+    if result == C_NULL
+        throw(OpenSSLError())
+    end
+    return nothing
+end
+load_provider(provider_name) = load_provider(C_NULL, provider_name)
+
+"""
+    load_legacy_provider()
+
+Load the legacy provider. This loads legacy ciphers such as Blowfish.
+
+See https://www.openssl.org/docs/man3.0/man7/OSSL_PROVIDER-legacy.html
+
+!!! compat "OpenSSL v3" `load_legacy_provider` is only available with version 3 of the OpenSSL_jll
+"""
+load_legacy_provider() = load_provider(C_NULL, "legacy")
 
 """
     Random bytes.
@@ -3080,16 +3090,6 @@ function update_tls_error_state()
         error_str = get_error()
         task_local_storage(:openssl_err, error_str)
     end
-end
-
-function version(; version_type::OpenSSLVersion=OPENSSL_VERSION)::String
-    version = ccall(
-        (:OpenSSL_version, libcrypto),
-        Cstring,
-        (Cint,),
-        version_type)
-
-    return unsafe_string(version)
 end
 
 include("ssl.jl")
