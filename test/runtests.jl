@@ -388,7 +388,7 @@ end
     ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod())
 
     # Make direct invalid call to OpenSSL
-    invalid_cipher_suites = "TLS_AES_356_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256"
+    invalid_cipher_suites = "TLS_AES_356_GCM_SHA384"
     result = ccall(
         (:SSL_CTX_set_ciphersuites, libssl),
         Cint,
@@ -454,13 +454,17 @@ end
     @test _x509_certificate.issuer_name == x509_certificate.issuer_name
 end
 
+# https://www.openssl.org/docs/man3.0/man7/OSSL_PROVIDER-legacy.html
 @testset "Encrypt" begin
+    if OpenSSL.version_number() ≥ v"3"
+        OpenSSL.load_legacy_provider()
+    end
     evp_ciphers = [
         EvpEncNull(),
-        EvpBlowFishCBC(),
-        EvpBlowFishECB(),
+        EvpBlowFishCBC(), # legacy
+        EvpBlowFishECB(), # legacy
         #EvpBlowFishCFB(), // not supported
-        EvpBlowFishOFB(),
+        EvpBlowFishOFB(), # legacy
         EvpAES128CBC(),
         EvpAES128ECB(),
         #EvpAES128CFB(), // not supported
@@ -496,6 +500,10 @@ end
 end
 
 @testset "EncryptCustomKey" begin
+    # EvpBlowFishECB is legacy, consider using EvpAES128ECB instead
+    if OpenSSL.version_number() ≥ v"3"
+        OpenSSL.load_legacy_provider()
+    end
     evp_cipher = EvpBlowFishECB()
     sym_key = random_bytes(evp_cipher.key_length ÷ 2)
     init_vector = random_bytes(evp_cipher.init_vector_length ÷ 2)
@@ -593,5 +601,32 @@ end
     if isdefined(Base, :errormonitor)
         errormonitor(server_task)
         errormonitor(client_task)
+    end
+end
+
+@testset "VersionNumber" begin
+    vn = OpenSSL.version_number()
+    @test vn ≥ v"1.1"
+
+    m = match(r"OpenSSL (\d+)\.(\d+)\.(\d+)", OpenSSL.version())
+    major = parse(Int, m[1])
+    minor = parse(Int, m[2])
+    patch = parse(Int, m[3])
+    vn2 = VersionNumber(major, minor, patch)
+    if vn < v"3"
+        # OpenSSL v1.1 uses non-conventional version numbers
+        @test vn.major == vn2.major
+        @test vn.minor == vn2.minor
+    else
+        @test vn == vn2
+    end
+
+    if vn ≥ v"3"
+        # These only work with OpenSSL v3
+        major = ccall((:OPENSSL_version_major, libcrypto), Cuint, ())
+        minor = ccall((:OPENSSL_version_minor, libcrypto), Cuint, ())
+        patch = ccall((:OPENSSL_version_patch, libcrypto), Cuint, ())
+        vn3 = VersionNumber(major, minor, patch)
+        @test vn == vn3
     end
 end

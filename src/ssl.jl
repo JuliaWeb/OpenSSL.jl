@@ -700,7 +700,7 @@ end
 """
 function get_peer_certificate(ssl::SSLStream)::Option{X509Certificate}
     x509 = ccall(
-        (:SSL_get_peer_certificate, libssl),
+        (SSL_get_peer_certificate, libssl),
         Ptr{Cvoid},
         (SSL,),
         ssl.ssl)
