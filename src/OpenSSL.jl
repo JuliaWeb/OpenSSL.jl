@@ -524,7 +524,7 @@ function _ossl_modules_path()
     @static if Sys.iswindows()
         bin_dir = dirname(OpenSSL_jll.libssl_path)
         lib_dir = joinpath(dirname(bin_dir), "lib")
-        if Sys.WORD == 64
+        if Sys.WORD_SIZE == 64
             return joinpath(lib_dir * "64", "ossl-modules")
         else
             return joinpath(lib_dir, "ossl-modules")
