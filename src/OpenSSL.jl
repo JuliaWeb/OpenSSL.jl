@@ -466,6 +466,14 @@ struct OpenSSLError <: Exception
     OpenSSLError(x::SSLErrorCode) = new(string(x))
 end
 
+"""
+    version(; [version_type::OpenSSLVersion])
+
+Obtain the version as a `String`. See [`OpenSSLVersion`](@ref) to select
+the version type.
+
+See also [`version_number`](@ref) to obtain a `VersionNumber`.
+"""
 function version(; version_type::OpenSSLVersion=OPENSSL_VERSION)::String
     version = ccall(
         (:OpenSSL_version, libcrypto),
