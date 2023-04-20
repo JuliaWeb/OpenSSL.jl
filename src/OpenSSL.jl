@@ -45,16 +45,24 @@ Return the version number of the OpenSSL C library.
 This uses `OpenSSL_version_num()`.
 """
 function version_number()
-    # This works on OpenSSL v1.1
-    vn = ccall((:OpenSSL_version_num, libssl), Culong, ())
+    @static if Sys.iswindows()
+        # Windows cannot find OpenSSL_version_num symbol ??
+        m = match(r"OpenSSL (\d+)\.(\d+)\.(\d+)", OpenSSL.version())
+        major = parse(Int, m[1])
+        minor = parse(Int, m[2])
+        patch = parse(Int, m[3])
+    else
+        # This works on OpenSSL v1.1
+        vn = ccall((:OpenSSL_version_num, libssl), Culong, ())
 
-    # 0xMNN00PP0L
-    # M: major
-    # NN: minor
-    # PP: patch
-    major = vn >> 28
-    minor = vn >> 20 & 0xff
-    patch = vn >> 4 & 0xff
+        # 0xMNN00PP0L
+        # M: major
+        # NN: minor
+        # PP: patch
+        major = vn >> 28
+        minor = vn >> 20 & 0xff
+        patch = vn >> 4 & 0xff
+    end
 
     return VersionNumber(major, minor, patch)
 end
