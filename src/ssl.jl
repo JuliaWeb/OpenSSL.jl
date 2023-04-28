@@ -411,7 +411,7 @@ mutable struct SSLStream <: IO
     # socket and the SSL_peek call that processes bytes to be seen
     # as one "operation"
     eoflock::ReentrantLock
-    lock::Threads.SpinLock
+    lock::ReentrantLock
     readbytes::Base.RefValue{Csize_t}
     writebytes::Base.RefValue{Csize_t}
     peekbuf::Base.RefValue{UInt8}
@@ -431,16 +431,12 @@ end
         ssl = SSL(ssl_context, bio_read, bio_write)
 
 @static if VERSION < v"1.7"
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Threads.SpinLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), Threads.Atomic{Bool}(false), Threads.Atomic{Bool}(false))
 else
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), Threads.SpinLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false, false)
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false, false)
 end
     end
 end
-
-# backwards compat
-SSLStream(ssl_context::SSLContext, io::TCPSocket, ::TCPSocket) = SSLStream(ssl_context, io)
-Base.getproperty(ssl::SSLStream, nm::Symbol) = nm === :bio_read_stream ? ssl : getfield(ssl, nm)
 
 SSLStream(tcp::TCPSocket) = SSLStream(SSLContext(OpenSSL.TLSClientMethod()), tcp)
 
@@ -644,8 +640,6 @@ end
 function Base.eof(ssl::SSLStream)::Bool
     isopen(ssl) || return true
     bytesavailable(ssl) > 0 && return false
-    peekbuf = ssl.peekbuf
-    peekbytes = ssl.peekbytes
     while isreadable(ssl)
         # note that care needs to be taken here to avoid a potential bad
         # race condition; for SSLStream, we have to manage the state of
@@ -677,9 +671,9 @@ function Base.eof(ssl::SSLStream)::Bool
                 Cint,
                 (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
                 ssl.ssl,
-                peekbuf,
+                ssl.peekbuf,
                 1,
-                peekbytes
+                ssl.peekbytes
             )
             ret == SSL_ERROR_NONE && return false
             # if we get WANT_READ back, that means there were pending bytes
