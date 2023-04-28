@@ -654,6 +654,7 @@ function Base.eof(ssl::SSLStream)::Bool
         Base.@lock ssl.eoflock begin
             # check condition now that we have eoflock since another task may have
             # succeeded in getting bytes processed
+            isopen(ssl) || return true
             bytesavailable(ssl) > 0 && return false
             # no processed bytes available, check if there are unprocessed bytes
             if !haspending(ssl)
