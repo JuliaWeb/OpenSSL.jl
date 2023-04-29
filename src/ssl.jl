@@ -455,13 +455,13 @@ macro geterror(ssl, op, expr)
         Base.@lock ssl.lock begin
             isopen($ssl) || throwio($op)
             # do the ccall
-            ret = $expr
+            _ret = $expr
             # we want to return one of our SSL return codes, regardless of error
             # SSL_peek_ex, SSL_write_ex, SSL_connect, and SSL_read_ex all return 1 on success
-            if ret == 1
+            if _ret == 1
                 ret = SSL_ERROR_NONE
             else
-                err = get_error($ssl.ssl, ret)
+                err = get_error($ssl.ssl, _ret)
                 if err == SSL_ERROR_ZERO_RETURN
                     # the peer sent a close_notify, so no more reading is possible
                     @atomicset $ssl.close_notify_received = true
@@ -613,7 +613,7 @@ end
 
 # returns the # of bytes that can be read immediately via unsafe_read
 # i.e. # of processes, decrypted bytes available
-function Base.bytesavailable(ssl::SSLStream)::Cint
+function Base.bytesavailable(ssl::SSLStream)
     Base.@lock ssl.lock begin
         isopen(ssl) || return 0
         return Int(ccall(
