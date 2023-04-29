@@ -465,6 +465,7 @@ macro geterror(ssl, op, expr)
                 if err == SSL_ERROR_ZERO_RETURN
                     # the peer sent a close_notify, so no more reading is possible
                     @atomicset $ssl.close_notify_received = true
+                    ret = SSL_ERROR_ZERO_RETURN
                 elseif err == SSL_ERROR_NONE
                     ret = SSL_ERROR_NONE
                 elseif err == SSL_ERROR_WANT_READ
