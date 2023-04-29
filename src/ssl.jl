@@ -449,11 +449,13 @@ Base.iswritable(ssl::SSLStream)::Bool = isopen(ssl) && isopen(ssl.io)
 # we use this to standardize the error handling for all of the SSL_*_ex functions
 macro geterror(ssl, op, expr)
     esc(quote
-        # clear the current error queue before openssl ccall
-        clear_errors!()
-        # last check that SSL is still open before ccall
+        # lock our SSLStream while we clear errors
+        # make a ccall, then check the error queue
         Base.@lock ssl.lock begin
+            # last check that SSL is still open before ccall
             isopen($ssl) || throwio($op)
+            # clear the current error queue before openssl ccall
+            clear_errors!()
             # do the ccall
             _ret = $expr
             # we want to return one of our SSL return codes, regardless of error
@@ -525,19 +527,17 @@ function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
 
     # Check the certificate.
     if require_ssl_verification
-        Base.@lock ssl.lock begin
-            isopen(ssl) || throwio(:verify_result)
-            if (ret = ccall(
-                (:SSL_get_verify_result, libssl),
-                Cint,
-                (SSL,),
-                ssl.ssl)) != 0
-                throw(OpenSSLError(unsafe_string(ccall(
-                    (:X509_verify_cert_error_string, libcrypto),
-                    Ptr{UInt8},
-                    (Cint,),
-                    ret))))
-            end
+        isopen(ssl) || throwio(:verify_result)
+        if (ret = ccall(
+            (:SSL_get_verify_result, libssl),
+            Cint,
+            (SSL,),
+            ssl.ssl)) != 0
+            throw(OpenSSLError(unsafe_string(ccall(
+                (:X509_verify_cert_error_string, libcrypto),
+                Ptr{UInt8},
+                (Cint,),
+                ret))))
         end
         # get peer certificate
         cert = get_peer_certificate(ssl)
@@ -547,15 +547,13 @@ function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
     # set read ahead; this is a recommended optimization when we can guarantee
     # that an SSL connection will only ever be read from sequentially, which we do
     # by not doing any internal buffering
-    Base.@lock ssl.lock begin
-        isopen(ssl) || throwio(:set_read_ahead)
-        ccall(
-            (:SSL_set_read_ahead, libssl),
-            Cvoid,
-            (SSL, Cint),
-            ssl.ssl,
-            Cint(1))
-    end
+    isopen(ssl) || throwio(:set_read_ahead)
+    ccall(
+        (:SSL_set_read_ahead, libssl),
+        Cvoid,
+        (SSL, Cint),
+        ssl.ssl,
+        Cint(1))
     return
 end
 
@@ -563,17 +561,15 @@ const SSL_CTRL_SET_TLSEXT_HOSTNAME = 55
 const TLSEXT_NAMETYPE_host_name = 0
 
 function hostname!(ssl::SSLStream, host)
-    Base.@lock ssl.lock begin
-        isopen(ssl) || throwio(:hostname)
-        if (ret = ccall(
-            (:SSL_ctrl, libssl),
-            Cint,
-            (SSL, Cint, Clong, Cstring),
-            ssl.ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, host)) != 1
-            throw(OpenSSLError(get_error()))
-        end
-        ssl_set_host(ssl.ssl, host)
+    isopen(ssl) || throwio(:hostname)
+    if (ret = ccall(
+        (:SSL_ctrl, libssl),
+        Cint,
+        (SSL, Cint, Clong, Cstring),
+        ssl.ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, host)) != 1
+        throw(OpenSSLError(get_error()))
     end
+    ssl_set_host(ssl.ssl, host)
 end
 
 function Sockets.accept(ssl::SSLStream)
@@ -615,27 +611,23 @@ end
 # returns the # of bytes that can be read immediately via unsafe_read
 # i.e. # of processes, decrypted bytes available
 function Base.bytesavailable(ssl::SSLStream)
-    Base.@lock ssl.lock begin
-        isopen(ssl) || return 0
-        return Int(ccall(
-            (:SSL_pending, libssl),
-            Cint,
-            (SSL,),
-            ssl.ssl))
-    end
+    isopen(ssl) || return 0
+    return Int(ccall(
+        (:SSL_pending, libssl),
+        Cint,
+        (SSL,),
+        ssl.ssl))
 end
 
 # returns whether there are _any_ bytes buffered, processed
 # or unprocessed, in the SSL stream
 function haspending(ssl::SSLStream)
-    Base.@lock ssl.lock begin
-        isopen(ssl) || return false
-        return 1 == ccall(
-            (:SSL_has_pending, libssl),
-            Cint,
-            (SSL,),
-            ssl.ssl)
-    end
+    isopen(ssl) || return false
+    return 1 == ccall(
+        (:SSL_has_pending, libssl),
+        Cint,
+        (SSL,),
+        ssl.ssl)
 end
 
 function Base.eof(ssl::SSLStream)::Bool
@@ -692,19 +684,17 @@ end
     Close SSL stream.
 """
 function Base.close(ssl::SSLStream, shutdown::Bool=true)
-    Base.@lock ssl.lock begin
-        if @atomiccas(ssl.closed, false, true).success
-            # we won the race to close the ssl
-            # close underlying io
-            try
-                Base.close(ssl.io)
-            catch e
-                e isa Base.IOError || rethrow()
-            end
-            # Ignore the disconnect result.
-            shutdown && ssl_disconnect(ssl.ssl)
-            free(ssl.ssl)
+    if @atomiccas(ssl.closed, false, true).success
+        # we won the race to close the ssl
+        # close underlying io
+        try
+            Base.close(ssl.io)
+        catch e
+            e isa Base.IOError || rethrow()
         end
+        # Ignore the disconnect result.
+        shutdown && ssl_disconnect(ssl.ssl)
+        free(ssl.ssl)
     end
     return
 end
@@ -713,16 +703,15 @@ end
     Gets the X509 certificate of the peer.
 """
 function get_peer_certificate(ssl::SSLStream)::Option{X509Certificate}
-    Base.@lock ssl.lock begin
-        x509 = ccall(
-            (SSL_get_peer_certificate, libssl),
-            Ptr{Cvoid},
-            (SSL,),
-            ssl.ssl)
-        if x509 != C_NULL
-            return X509Certificate(x509)
-        else
-            return nothing
-        end
+    isopen(ssl) || throwio(:get_peer_certificate)
+    x509 = ccall(
+        (SSL_get_peer_certificate, libssl),
+        Ptr{Cvoid},
+        (SSL,),
+        ssl.ssl)
+    if x509 != C_NULL
+        return X509Certificate(x509)
+    else
+        return nothing
     end
 end
