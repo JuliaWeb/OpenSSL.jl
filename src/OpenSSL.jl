@@ -3126,7 +3126,7 @@ function __init__()
     end
 
     # initialize per-thread locks
-    nthreads = isdefined(Threads, maxthreadid) ? Threads.maxthreadid() : Threads.nthreads()
+    nthreads = isdefined(Threads, :maxthreadid) ? Threads.maxthreadid() : Threads.nthreads()
     for _ = 1:nthreads
         push!(PER_THREAD_LOCKS, ReentrantLock())
     end
