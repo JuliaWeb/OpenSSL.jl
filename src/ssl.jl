@@ -411,6 +411,9 @@ mutable struct SSLStream <: IO
     # socket and the SSL_peek call that processes bytes to be seen
     # as one "operation"
     eoflock::ReentrantLock
+    # this 2nd lock is specifically to guard against 2 threads trying to
+    # call `read` or `write` at the same time as per the thread in
+    # https://mailing.openssl.users.narkive.com/HeNGlNAJ/openssl-and-multithreaded-programs
     lock::ReentrantLock
     readbytes::Base.RefValue{Csize_t}
     writebytes::Base.RefValue{Csize_t}
@@ -439,6 +442,9 @@ end
 end
 
 SSLStream(tcp::TCPSocket) = SSLStream(SSLContext(OpenSSL.TLSClientMethod()), tcp)
+
+# backwards compat
+Base.getproperty(ssl::SSLStream, nm::Symbol) = nm === :bio_read_stream ? ssl : getfield(ssl, nm)
 
 Base.isreadable(ssl::SSLStream)::Bool = !(@atomicget(ssl.close_notify_received))
 Base.isopen(ssl::SSLStream)::Bool = !@atomicget(ssl.closed)
@@ -473,6 +479,9 @@ macro geterror(ssl, op, expr)
         # lock our SSLStream while we clear errors
         # make a ccall, then check the error queue
         Base.@lock ssl.lock begin
+            # we also lock the current task to the current thread to avoid
+            # task migration and protect our thread-local error queue in openssl
+            # from possibly having interleaved errors from parallel operations
             @lockthread begin
                 # last check that SSL is still open before ccall
                 isopen($ssl) || throwio($op)
