@@ -181,7 +181,7 @@ end
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
     # Create SSL stream.
-    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream)
 
     OpenSSL.connect(ssl)
 
@@ -221,7 +221,7 @@ end
     result = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
     OpenSSL.ssl_set_ciphersuites(ssl_ctx, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
 
-    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream)
 
     OpenSSL.connect(ssl)
 
@@ -240,7 +240,7 @@ end
 
     # Create SSL stream.
     tcp_stream = connect("www.nghttp2.org", 443)
-    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream)
     OpenSSL.connect(ssl)
 
     request_str = "GET / HTTP/1.1\r\nHost: www.nghttp2.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
