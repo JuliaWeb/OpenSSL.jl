@@ -445,6 +445,27 @@ Base.isopen(ssl::SSLStream)::Bool = !@atomicget(ssl.closed)
 Base.iswritable(ssl::SSLStream)::Bool = isopen(ssl) && isopen(ssl.io)
 @noinline throwio(op) = throw(Base.IOError("$op requires ssl to be open", 0))
 
+const PER_THREAD_LOCKS = ReentrantLock[]
+
+macro lockthread(expr)
+    quote
+        ct = current_task()
+        tid = Threads.threadid()
+        sticky = ct.sticky
+        # set current task to sticky to avoid migration
+        ct.sticky = true
+        lock(PER_THREAD_LOCKS[tid])
+        try
+            $(esc(expr))
+        finally
+            unlock(PER_THREAD_LOCKS[tid])
+            # restore current task sticky state
+            ct.sticky = sticky
+            @assert tid == Threads.threadid()
+        end
+    end
+end
+
 # this is a macro, but should be a function, but closures are stupid slow
 # we use this to standardize the error handling for all of the SSL_*_ex functions
 macro geterror(ssl, op, expr)
@@ -452,42 +473,44 @@ macro geterror(ssl, op, expr)
         # lock our SSLStream while we clear errors
         # make a ccall, then check the error queue
         Base.@lock ssl.lock begin
-            # last check that SSL is still open before ccall
-            isopen($ssl) || throwio($op)
-            # clear the current error queue before openssl ccall
-            clear_errors!()
-            # do the ccall
-            _ret = $expr
-            # we want to return one of our SSL return codes, regardless of error
-            # SSL_peek_ex, SSL_write_ex, SSL_connect, and SSL_read_ex all return 1 on success
-            if _ret == 1
-                ret = SSL_ERROR_NONE
-            else
-                err = get_error($ssl.ssl, _ret)
-                if err == SSL_ERROR_ZERO_RETURN
-                    # the peer sent a close_notify, so no more reading is possible
-                    @atomicset $ssl.close_notify_received = true
-                    ret = SSL_ERROR_ZERO_RETURN
-                elseif err == SSL_ERROR_NONE
+            @lockthread begin
+                # last check that SSL is still open before ccall
+                isopen($ssl) || throwio($op)
+                # clear the current error queue before openssl ccall
+                clear_errors!()
+                # do the ccall
+                _ret = $expr
+                # we want to return one of our SSL return codes, regardless of error
+                # SSL_peek_ex, SSL_write_ex, SSL_connect, and SSL_read_ex all return 1 on success
+                if _ret == 1
                     ret = SSL_ERROR_NONE
-                elseif err == SSL_ERROR_WANT_READ
-                    # we need to read more data from the underlying socket
-                    ret = SSL_ERROR_WANT_READ
-                elseif err == SSL_ERROR_WANT_WRITE
-                    # we need to write more data to the underlying socket
-                    # we don't expect to ever see this since we set up our SSL
-                    # to do auto TLS (re)negotiation
-                    ret = SSL_ERROR_WANT_WRITE
                 else
-                    # this is usually some other kind of error, like a protocol error
-                    # or OS-level IO error, just close the SSL connection and throw
-                    # notably, the openssl docs say we should *not* call ssl_disconnect
-                    # in this case, hence the `false` arg to close
-                    close($ssl, false)
-                    throw(Base.IOError(OpenSSLError(err).msg, 0))
+                    err = get_error($ssl.ssl, _ret)
+                    if err == SSL_ERROR_ZERO_RETURN
+                        # the peer sent a close_notify, so no more reading is possible
+                        @atomicset $ssl.close_notify_received = true
+                        ret = SSL_ERROR_ZERO_RETURN
+                    elseif err == SSL_ERROR_NONE
+                        ret = SSL_ERROR_NONE
+                    elseif err == SSL_ERROR_WANT_READ
+                        # we need to read more data from the underlying socket
+                        ret = SSL_ERROR_WANT_READ
+                    elseif err == SSL_ERROR_WANT_WRITE
+                        # we need to write more data to the underlying socket
+                        # we don't expect to ever see this since we set up our SSL
+                        # to do auto TLS (re)negotiation
+                        ret = SSL_ERROR_WANT_WRITE
+                    else
+                        # this is usually some other kind of error, like a protocol error
+                        # or OS-level IO error, just close the SSL connection and throw
+                        # notably, the openssl docs say we should *not* call ssl_disconnect
+                        # in this case, hence the `false` arg to close
+                        close($ssl, false)
+                        throw(Base.IOError(OpenSSLError(err).msg, 0))
+                    end
                 end
+                ret
             end
-            ret
         end
     end)
 end
