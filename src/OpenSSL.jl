@@ -3125,12 +3125,6 @@ function __init__()
         ossl_provider_set_default_search_path()
     end
 
-    # initialize per-thread locks
-    nthreads = isdefined(Threads, :maxthreadid) ? Threads.maxthreadid() : Threads.nthreads()
-    for _ = 1:nthreads
-        push!(PER_THREAD_LOCKS, ReentrantLock())
-    end
-
     return
 end
 
