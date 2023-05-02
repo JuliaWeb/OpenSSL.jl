@@ -398,7 +398,7 @@ mutable struct SSLStream <: IO
         bio_read::BIO = BIO(io; finalize=false)
         bio_write::BIO = BIO(io; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false, false)
+        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false)
     end
 end
 
