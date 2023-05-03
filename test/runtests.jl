@@ -285,11 +285,18 @@ end
 
     sign_certificate(x509_certificate, evp_pkey)
 
-    iob = IOBuffer()
-    write(iob, x509_certificate)
-
-    seek(iob, 0)
-    cert_pem = String(read(iob))
+    port, server = Sockets.listenany(10000)
+    iob = connect(port)
+    sob = accept(server)
+    local cert_pem
+    try
+        write(iob, x509_certificate)
+        cert_pem = String(readavailable(sob))
+    finally
+        close(iob)
+        close(sob)
+        close(server)
+    end
 
     x509_certificate2 = X509Certificate(cert_pem)
 
@@ -303,9 +310,6 @@ end
     p12_object = P12Object(evp_pkey, x509_certificate)
 
     OpenSSL.unpack(p12_object)
-
-    #seek(io, 0)
-    # @show "p12:" String(read(io))
 end
 
 @testset "SignCertCertificate" begin
@@ -571,10 +575,18 @@ end
 @testset "SerializePrivateKey" begin
     evp_pkey = EvpPKey(rsa_generate_key())
 
-    io = IOBuffer()
-    write(io, evp_pkey)
-
-    pkey_pem = String(take!(io))
+    port, server = Sockets.listenany(10000)
+    iob = connect(port)
+    sob = accept(server)
+    local pkey_pem
+    try
+        write(iob, evp_pkey)
+        pkey_pem = String(readavailable(sob))
+    finally
+        close(iob)
+        close(sob)
+        close(server)
+    end
 
     @test startswith(pkey_pem, "-----BEGIN PRIVATE KEY-----")
 
