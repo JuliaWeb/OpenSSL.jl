@@ -51,7 +51,7 @@ end
 
 function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
     try
-        io = bio_get_data(bio)
+        io = bio_get_data(bio)::TCPSocket
         written = unsafe_write(io, in, inlen)
         return Cint(written)
     catch e
@@ -501,22 +501,23 @@ function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UIn
 end
 
 function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
-    Base.@lock ssl.lock begin
-        while true
-            ret = @geterror ssl :connect ssl_connect(ssl.ssl)
-            if ret == SSL_ERROR_NONE
-                break
-            elseif ret == SSL_ERROR_WANT_READ
-                # this means connect is waiting for more data from the underlying socket
-                # so call eof on the socket to wait for more bytes to come in
-                eof(ssl.io) && throw(EOFError())
-            else
-                throw(Base.IOError(OpenSSLError(ret).msg, 0))
-            end
+    while true
+        ret = @geterror ssl :connect ssl_connect(ssl.ssl)
+        if ret == SSL_ERROR_NONE
+            break
+        elseif ret == SSL_ERROR_WANT_READ
+            # this means connect is waiting for more data from the underlying socket
+            # so call eof on the socket to wait for more bytes to come in
+            eof(ssl.io) && throw(EOFError())
+        else
+            throw(Base.IOError(OpenSSLError(ret).msg, 0))
         end
+    end
 
-        # Check the certificate.
-        if require_ssl_verification
+    # Check the certificate.
+    if require_ssl_verification
+        Base.@lock ssl.lock begin
+            ssl.closed && throwio(:verify_result)
             if (ret = ccall(
                 (:SSL_get_verify_result, libssl),
                 Cint,
@@ -528,22 +529,25 @@ function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
                     (Cint,),
                     ret))))
             end
-            # get peer certificate
-            cert = get_peer_certificate(ssl)
-            cert === nothing && throw(OpenSSLError("No peer certificate"))
         end
+        # get peer certificate
+        cert = get_peer_certificate(ssl)
+        cert === nothing && throw(OpenSSLError("No peer certificate"))
+    end
 
-        # set read ahead; this is a recommended optimization when we can guarantee
-        # that an SSL connection will only ever be read from sequentially, which we do
-        # by not doing any internal buffering
+    # set read ahead; this is a recommended optimization when we can guarantee
+    # that an SSL connection will only ever be read from sequentially, which we do
+    # by not doing any internal buffering
+    Base.@lock ssl.lock begin
+        ssl.closed && throwio(:read_ahead)
         ccall(
             (:SSL_set_read_ahead, libssl),
             Cvoid,
             (SSL, Cint),
             ssl.ssl,
             Cint(1))
-        return
     end
+    return
 end
 
 const SSL_CTRL_SET_TLSEXT_HOSTNAME = 55
