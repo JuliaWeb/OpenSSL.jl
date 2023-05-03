@@ -529,7 +529,7 @@ end
 # Locate oss-modules, which contains legacy shared library
 function _ossl_modules_path()
     @static if Sys.iswindows()
-        bin_dir = dirname(OpenSSL_jll.libssl_path)
+        bin_dir = dirname(OpenSSL_jll.libssl_path::String)
         lib_dir = joinpath(dirname(bin_dir), "lib")
         if Sys.WORD_SIZE == 64
             return joinpath(lib_dir * "64", "ossl-modules")
@@ -537,7 +537,7 @@ function _ossl_modules_path()
             return joinpath(lib_dir, "ossl-modules")
         end
     else
-        return joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules")
+        return joinpath(dirname(OpenSSL_jll.libssl::String), "ossl-modules")
     end
 end
 

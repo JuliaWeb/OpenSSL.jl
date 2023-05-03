@@ -14,7 +14,7 @@ function bio_get_data(bio::BIO)
         Ptr{Cvoid},
         (BIO,),
         bio)
-    return unsafe_pointer_to_objref(data)
+    return unsafe_pointer_to_objref(data)::IO
 end
 
 const BIO_FLAGS_SHOULD_RETRY = 0x08
@@ -52,7 +52,7 @@ end
 function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
     try
         io = bio_get_data(bio)
-        written = unsafe_write(io, in, inlen)
+        written = unsafe_write(io, in, inlen)::Int
         return Cint(written)
     catch e
         # we don't want to throw a Julia exception from a C callback
