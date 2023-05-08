@@ -383,7 +383,9 @@ mutable struct SSLStream <: IO
     # socket and the SSL_peek call that processes bytes to be seen
     # as one "operation"
     eoflock::ReentrantLock
-    # this 2nd lock is specifically to guard against 2 threads trying to
+    # this lock guards operations accessing our .ssl object and after acquiring
+    # the lock, *MUST* check if .closed is true before proceeding
+    # also this guards against 2 threads trying to
     # call `read` or `write` at the same time as per the thread in
     # https://mailing.openssl.users.narkive.com/HeNGlNAJ/openssl-and-multithreaded-programs
     lock::ReentrantLock
