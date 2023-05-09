@@ -33,7 +33,7 @@ function test_server()
         OpenSSL.ssl_use_certificate(ssl_ctx, x509_certificate)
         OpenSSL.ssl_use_private_key(ssl_ctx, evp_pkey)
 
-        ssl = SSLStream(ssl_ctx, accepted_socket, accepted_socket)
+        ssl = SSLStream(ssl_ctx, accepted_socket)
 
         OpenSSL.accept(ssl)
 
@@ -66,7 +66,7 @@ function test_client()
     ssl_options = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
     # Create SSL stream.
-    ssl = SSLStream(ssl_ctx, tcp_stream, tcp_stream)
+    ssl = SSLStream(ssl_ctx, tcp_stream)
 
     #TODO expose connect
     OpenSSL.connect(ssl)
