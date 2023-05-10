@@ -285,18 +285,10 @@ end
 
     sign_certificate(x509_certificate, evp_pkey)
 
-    port, server = Sockets.listenany(10000)
-    iob = connect(port)
-    sob = accept(server)
-    local cert_pem
-    try
-        write(iob, x509_certificate)
-        cert_pem = String(readavailable(sob))
-    finally
-        close(iob)
-        close(sob)
-        close(server)
-    end
+    iob = IOBuffer()
+    write(iob, x509_certificate)
+
+    cert_pem = String(take!(iob))
 
     x509_certificate2 = X509Certificate(cert_pem)
 
@@ -575,18 +567,10 @@ end
 @testset "SerializePrivateKey" begin
     evp_pkey = EvpPKey(rsa_generate_key())
 
-    port, server = Sockets.listenany(10000)
-    iob = connect(port)
-    sob = accept(server)
-    local pkey_pem
-    try
-        write(iob, evp_pkey)
-        pkey_pem = String(readavailable(sob))
-    finally
-        close(iob)
-        close(sob)
-        close(server)
-    end
+    iob = IOBuffer()
+    write(iob, evp_pkey)
+
+    pkey_pem = String(take!(iob))
 
     @test startswith(pkey_pem, "-----BEGIN PRIVATE KEY-----")
 
