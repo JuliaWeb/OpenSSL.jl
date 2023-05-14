@@ -29,6 +29,7 @@ function bio_set_flags(bio::BIO, flags)
         (BIO, Cint),
         bio, flags)
 end
+
 bio_set_read_retry(bio::BIO) = bio_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
 bio_clear_flags(bio::BIO) = bio_set_flags(bio, 0x00)
 
@@ -36,6 +37,7 @@ function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
     try
         bio_clear_flags(bio)
         io = bio_get_data(bio)::IO
+        eof(io)
         n = bytesavailable(io)
         if n == 0
             bio_set_read_retry(bio)
@@ -45,7 +47,7 @@ function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
         return Cint(min(n, outlen))
     catch e
         # we don't want to throw a Julia exception from a C callback
-        return Cint(0)
+        return Cint(-1)
     end
 end
 
@@ -56,7 +58,7 @@ function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
         return Cint(written)
     catch e
         # we don't want to throw a Julia exception from a C callback
-        return Cint(0)
+        return Cint(-1)
     end
 end
 

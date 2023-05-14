@@ -1,6 +1,7 @@
 using Dates
 using OpenSSL
 using Sockets
+using Test
 
 function test_server()
     x509_certificate = X509Certificate()
@@ -22,40 +23,34 @@ function test_server()
     sign_certificate(x509_certificate, evp_pkey)
 
     server_socket = listen(5000)
-    try
-        accepted_socket = accept(server_socket)
+    accepted_socket = accept(server_socket)
 
-        # Create and configure server SSLContext.
-        ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod())
-        _ = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
+    # Create and configure server SSLContext.
+    ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod())
+    _ = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
-        OpenSSL.ssl_set_ciphersuites(ssl_ctx, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
-        OpenSSL.ssl_use_certificate(ssl_ctx, x509_certificate)
-        OpenSSL.ssl_use_private_key(ssl_ctx, evp_pkey)
+    OpenSSL.ssl_set_ciphersuites(ssl_ctx, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256")
+    OpenSSL.ssl_use_certificate(ssl_ctx, x509_certificate)
+    OpenSSL.ssl_use_private_key(ssl_ctx, evp_pkey)
 
-        ssl = SSLStream(ssl_ctx, accepted_socket)
+    ssl = SSLStream(ssl_ctx, accepted_socket)
 
-        OpenSSL.accept(ssl)
+    OpenSSL.accept(ssl)
 
-        @test !eof(ssl)
-        request = readavailable(ssl)
-        reply = "reply: $(String(request))"
+    @test !eof(ssl)
+    request = readavailable(ssl)
+    reply = "reply: $(String(request))"
 
-        # eof(ssl) will block
+    # eof(ssl) will block
 
-        # Verify the are no more bytes available in the stream.
-        @test bytesavailable(ssl) == 0
+    # Verify the are no more bytes available in the stream.
+    @test bytesavailable(ssl) == 0
 
-        write(ssl, reply)
+    unsafe_write(ssl, pointer(reply), length(reply))
 
-        try
-            close(ssl)
-        catch
-        end
-        finalize(ssl_ctx)
-    finally
-        close(server_socket)
-    end
+    close(ssl)
+    finalize(ssl_ctx)
+
     return nothing
 end
 
@@ -63,13 +58,12 @@ function test_client()
     tcp_stream = connect(5000)
 
     ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod())
-    ssl_options = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
+    _ = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
 
     # Create SSL stream.
     ssl = SSLStream(ssl_ctx, tcp_stream)
 
-    #TODO expose connect
-    OpenSSL.connect(ssl)
+    connect(ssl; require_ssl_verification = false)
 
     # Verify the server certificate.
     x509_server_cert = OpenSSL.get_peer_certificate(ssl)
@@ -87,12 +81,8 @@ function test_client()
 
     response_str = String(readavailable(ssl))
 
-    @test response_str == "reply: $request_str"
+    @test response_str == "reply: $(request_str)"
 
-    try
-        close(ssl)
-    catch
-    end
+    close(ssl)
     finalize(ssl_ctx)
-    return nothing
 end
