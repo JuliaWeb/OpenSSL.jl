@@ -594,10 +594,9 @@ end
 @testset "SSLServer" begin
     server_task = @async test_server()
     client_task = @async test_client()
-    if isdefined(Base, :errormonitor)
-        errormonitor(server_task)
-        errormonitor(client_task)
-    end
+
+    wait(server_task)
+    wait(client_task)
 end
 
 @testset "VersionNumber" begin

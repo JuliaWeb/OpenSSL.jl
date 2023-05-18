@@ -210,6 +210,18 @@ const BIO_TYPE_SOURCE_SINK = 0x0400
     #
     BIO_TYPE_START = 128)
 
+"""
+    These are used in the following macros and are passed to BIO_ctrl().
+"""
+#@enum(BIOFlags::Cint,
+#
+#);
+const BIO_FLAGS_SHOULD_RETRY = 0x08
+const BIO_FLAGS_READ = 0x01
+const BIO_FLAGS_WRITE = 0x02
+const BIO_FLAGS_IO_SPECIAL = 0x04
+
+
 # Some values are reserved until OpenSSL 3.0.0 because they were previously
 # included in SSL_OP_ALL in a 1.1.x release.
 @bitflag SSLOptions::Culong begin
@@ -1544,7 +1556,7 @@ mutable struct BIO
         Creates a BIO object using IO stream method.
         The BIO object is not registered with the finalizer.
     """
-    function BIO(data=nothing; finalize::Bool=true)
+    function BIO(io::T; finalize::Bool=true) where {T<:IO}
         bio = ccall(
             (:BIO_new, libcrypto),
             Ptr{Cvoid},
@@ -1557,7 +1569,7 @@ mutable struct BIO
         bio = new(bio)
         finalize && finalizer(free, bio)
 
-        # note that `data` must be held as a reference somewhere else
+        # note that `io` must be held as a reference somewhere else
         # since it is not referenced by the BIO directly
         # e.g. in SSLStream, we keep the `io` reference that is passed to
         # the read/write BIOs
@@ -1566,7 +1578,7 @@ mutable struct BIO
             Cvoid,
             (BIO, Ptr{Cvoid}),
             bio,
-            data === nothing ? C_NULL : pointer_from_objref(data))
+            pointer_from_objref(io))
 
         # Set BIO as non-blocking
         ccall(
@@ -1577,6 +1589,7 @@ mutable struct BIO
             102,
             1,
             C_NULL)
+
         # Mark BIO as initalized.
         ccall(
             (:BIO_set_init, libcrypto),
@@ -1674,7 +1687,6 @@ end
 """
     BIO write.
 """
-## throw error here
 function Base.unsafe_write(bio::BIO, out_buffer::Ptr{UInt8}, out_length::Int)
     result = ccall(
         (:BIO_write, libcrypto),
@@ -1689,6 +1701,139 @@ function Base.unsafe_write(bio::BIO, out_buffer::Ptr{UInt8}, out_length::Int)
 end
 
 Base.write(bio::BIO, out_data) = return unsafe_write(bio, pointer(out_data), length(out_data))
+
+"""
+    BIOStream.
+    BIO with IO.
+"""
+mutable struct BIOStream{T<:IO}
+    bio::Ptr{Cvoid}
+end
+
+function bio_stream_get_io(bio_stream::BIOStream{T})::T where {T<:IO}
+    data = ccall(
+        (:BIO_get_data, libcrypto),
+        Ptr{Cvoid},
+        (BIOStream{T},),
+        bio_stream)
+    return unsafe_pointer_to_objref(data)::T
+end
+
+"""
+    BIOStream callbacks.
+"""
+
+"""
+    Called to initialize new BIO Stream object.
+"""
+on_bio_stream_create(::BIOStream{T}) where {T<:IO} = Cint(1)
+on_bio_stream_destroy(::BIOStream{T}) where {T<:IO} = Cint(0)
+
+#function bio_get_data(bio::BIO)
+#    data = ccall(
+#        (:BIO_get_data, libcrypto),
+#        Ptr{Cvoid},
+#        (BIO,),
+#        bio)
+#    return unsafe_pointer_to_objref(data)
+#end
+
+function bio_set_flags(bio_stream::BIOStream{T}, flags) where {T<:IO}
+    return ccall(
+        (:BIO_set_flags, libcrypto),
+        Cint,
+        (BIOStream{T}, Cint),
+        bio_stream, flags)
+end
+
+bio_set_read_retry(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
+bio_clear_flags(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, 0x00)
+
+"""
+static int fd_read(BIO *b, char *out, int outl)
+{
+    int ret = 0;
+
+    if (out != NULL) {
+        clear_sys_error();
+        ret = UP_read(b->num, out, outl);
+        BIO_clear_retry_flags(b);
+        if (ret <= 0) {
+            if (BIO_fd_should_retry(ret))
+                BIO_set_retry_read(b);
+            else if (ret == 0)
+                b->flags |= BIO_FLAGS_IN_EOF;
+        }
+    }
+    return ret;
+}
+"""
+
+function on_bio_stream_read(bio_stream::BIOStream{T}, out::Ptr{Cchar}, outlen::Cint) where {T<:IO}
+    try
+        bio_clear_flags(bio_stream)
+        io::T = bio_stream_get_io(bio_stream)
+        n = bytesavailable(io)
+        if n == 0
+            eof(io)
+            n = bytesavailable(io)
+        end
+
+        if n == 0
+            bio_set_read_retry(bio_stream)
+            return Cint(0)
+        end
+        unsafe_read(io, out, min(UInt(n), outlen))
+        return Cint(min(n, outlen))
+    catch e
+        # we don't want to throw a Julia exception from a C callback
+        return Cint(-1)
+    end
+end
+
+function on_bio_stream_write(bio_stream::BIOStream{T}, in::Ptr{Cchar}, inlen::Cint)::Cint where {T<:IO}
+    try
+        io::T = bio_stream_get_io(bio_stream)
+        written = unsafe_write(io, in, inlen)
+        return Cint(written)
+    catch e
+        # we don't want to throw a Julia exception from a C callback
+        return Cint(-1)
+    end
+end
+
+on_bio_stream_puts(bio_stream::BIOStream{T}, in::Ptr{Cchar}) where {T<:IO} = Cint(0)
+
+on_bio_stream_ctrl(bio_stream::BIOStream{T}, cmd::BIOCtrl, num::Clong, ptr::Ptr{Cvoid}) where {T<:IO} = Clong(1)
+
+"""
+    BIO Stream callbacks.
+"""
+struct BIOStreamCallbacks
+    on_bio_create_ptr::Ptr{Nothing}
+    on_bio_destroy_ptr::Ptr{Nothing}
+    on_bio_read_ptr::Ptr{Nothing}
+    on_bio_write_ptr::Ptr{Nothing}
+    on_bio_puts_ptr::Ptr{Nothing}
+    on_bio_ctrl_ptr::Ptr{Nothing}
+
+    function BIOStreamCallbacks()
+        on_bio_create_ptr = @cfunction on_bio_stream_create Cint (BIOStream{IO},)
+        on_bio_destroy_ptr = @cfunction on_bio_stream_destroy Cint (BIOStream{IO},)
+        on_bio_read_ptr = @cfunction on_bio_stream_read Cint (BIOStream{IO}, Ptr{Cchar}, Cint)
+        on_bio_write_ptr = @cfunction on_bio_stream_write Cint (BIOStream{IO}, Ptr{Cchar}, Cint)
+        on_bio_puts_ptr = @cfunction on_bio_stream_puts Cint (BIOStream{IO}, Ptr{Cchar})
+        on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Clong (BIOStream{IO}, BIOCtrl, Clong, Ptr{Cvoid})
+
+        return new(
+            on_bio_create_ptr,
+            on_bio_destroy_ptr,
+            on_bio_read_ptr,
+            on_bio_write_ptr,
+            on_bio_puts_ptr,
+            on_bio_ctrl_ptr)
+    end
+end
 
 """
     ASN1_TIME.
@@ -2943,8 +3088,6 @@ function Base.String(x509_ext::X509Extension)
     if x509_ext.x509_ext == C_NULL
         return "C_NULL"
     end
-
-    io = IOBuffer()
 
     bio = BIO(BIOMethodMemory())
 
