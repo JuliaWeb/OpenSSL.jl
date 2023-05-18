@@ -4,6 +4,9 @@ using Sockets
 using Test
 
 function test_server()
+    server_socket = listen(5000)
+    accepted_socket = accept(server_socket)
+
     x509_certificate = X509Certificate()
 
     evp_pkey = EvpPKey(rsa_generate_key())
@@ -22,9 +25,6 @@ function test_server()
 
     sign_certificate(x509_certificate, evp_pkey)
 
-    server_socket = listen(5000)
-    accepted_socket = accept(server_socket)
-
     # Create and configure server SSLContext.
     ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod())
     _ = OpenSSL.ssl_set_options(ssl_ctx, OpenSSL.SSL_OP_NO_COMPRESSION)
@@ -37,6 +37,8 @@ function test_server()
 
     OpenSSL.accept(ssl)
 
+    # TODO BUG, this is required
+    # eof is required
     @test !eof(ssl)
     request = readavailable(ssl)
     reply = "reply: $(String(request))"
@@ -76,12 +78,17 @@ function test_client()
     written = unsafe_write(ssl, pointer(request_str), length(request_str))
 
     sleep(1)
+
+    # TODO, BUG
+    # eof required
+    #
     @test !eof(ssl)
     @test length(request_str) == written
 
     response_str = String(readavailable(ssl))
 
     @test response_str == "reply: $(request_str)"
+    @show response_str
 
     close(ssl)
     finalize(ssl_ctx)

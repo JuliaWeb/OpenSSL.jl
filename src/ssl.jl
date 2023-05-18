@@ -237,21 +237,20 @@ function ssl_connect(ssl::SSL)
 end
 
 function ssl_accept(ssl::SSL)
-    if (ret = ccall(
+    return ccall(
         (:SSL_accept, libssl),
         Cint,
         (SSL,),
-        ssl)) != 1
-        throw(OpenSSLError(ret))
-    end
+        ssl)
 
-    ccall(
-        (:SSL_set_read_ahead, libssl),
-        Cvoid,
-        (SSL, Cint),
-        ssl,
-        Int32(1))
-    return nothing
+    #TODO not enabled for now
+    #ccall(
+    #    (:SSL_set_read_ahead, libssl),
+    #    Cvoid,
+    #    (SSL, Cint),
+    #    ssl,
+    #    Int32(1))
+    #return nothing
 end
 
 """
@@ -459,7 +458,8 @@ function hostname!(ssl::SSLStream, host)
 end
 
 function Sockets.accept(ssl::SSLStream)
-    ssl_accept(ssl.ssl)
+    ret = @geterror ssl :accept ssl_accept(ssl.ssl)
+    @show "Sockets.accept SSLStream",  ret
 end
 
 """
@@ -483,6 +483,7 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
         elseif ret == SSL_ERROR_WANT_READ
             # this means write is waiting for more data from the underlying socket
             # so call eof on the socket to wait for more bytes to come in
+            @show SSL_ERROR_WANT_READ
             eof(ssl.io) && throw(EOFError())
         elseif ret == SSL_ERROR_WANT_WRITE
             flush(ssl.io)

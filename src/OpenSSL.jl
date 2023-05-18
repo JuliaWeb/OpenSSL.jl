@@ -1729,15 +1729,6 @@ end
 on_bio_stream_create(::BIOStream{T}) where {T<:IO} = Cint(1)
 on_bio_stream_destroy(::BIOStream{T}) where {T<:IO} = Cint(0)
 
-#function bio_get_data(bio::BIO)
-#    data = ccall(
-#        (:BIO_get_data, libcrypto),
-#        Ptr{Cvoid},
-#        (BIO,),
-#        bio)
-#    return unsafe_pointer_to_objref(data)
-#end
-
 function bio_set_flags(bio_stream::BIOStream{T}, flags) where {T<:IO}
     return ccall(
         (:BIO_set_flags, libcrypto),
@@ -1773,18 +1764,16 @@ function on_bio_stream_read(bio_stream::BIOStream{T}, out::Ptr{Cchar}, outlen::C
     try
         bio_clear_flags(bio_stream)
         io::T = bio_stream_get_io(bio_stream)
-        n = bytesavailable(io)
-        if n == 0
-            eof(io)
-            n = bytesavailable(io)
-        end
 
+        n = bytesavailable(io)
         if n == 0
             bio_set_read_retry(bio_stream)
             return Cint(0)
         end
-        unsafe_read(io, out, min(UInt(n), outlen))
-        return Cint(min(n, outlen))
+
+        bytes_to_read::Cint = min(UInt(n), outlen)
+        unsafe_read(io, out, bytes_to_read)
+        return bytes_to_read
     catch e
         # we don't want to throw a Julia exception from a C callback
         return Cint(-1)
