@@ -199,7 +199,7 @@ end
     sleep(2)
     write(io, readavailable(ssl))
     response = String(take!(io))
-    @show response
+
     @test startswith(response, "HTTP/1.1 200 OK\r\n")
     sleep(2)
     @test isempty(readavailable(ssl))

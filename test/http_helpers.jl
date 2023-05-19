@@ -36,12 +36,13 @@ function test_server()
     ssl = SSLStream(ssl_ctx, accepted_socket)
 
     OpenSSL.accept(ssl)
-    @show "accepted"
 
-    # TODO BUG, this is required
-    # eof is required
-    @test !eof(ssl)
-    @show "server after eof", bytesavailable(ssl)
+    # wait for the request, as we are using `readavailable`
+    # we need to make sure there is a data in the buffer.
+    while bytesavailable(ssl) == 0
+        eof(ssl)
+    end
+
     request = readavailable(ssl)
     reply = "reply: $(String(request))"
 
@@ -52,7 +53,6 @@ function test_server()
 
     unsafe_write(ssl, pointer(reply), length(reply))
 
-    #TODO bug
     close(ssl)
     finalize(ssl_ctx)
 
