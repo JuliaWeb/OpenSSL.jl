@@ -248,21 +248,12 @@ end
     Shut down a TLS/SSL connection.
 """
 function ssl_disconnect(ssl::SSL)
-    result = ccall(
+    _ = ccall(
         (:SSL_shutdown, libssl),
         Cint,
         (SSL,),
         ssl)
-    #@show "ssl_disconnect", result
-    #if result == 0
-    #    result = ccall(
-    #        (:SSL_shutdown, libssl),
-    #        Cint,
-    #        (SSL,),
-    #        ssl)
-    #end
-    #@show "ssl_disconnect", result
-    
+
     return nothing
 end
 
@@ -464,12 +455,7 @@ end
 """
 function Sockets.accept(ssl::SSLStream)
     while true
-        ret = @geterror ssl :ssl_accept ccall(
-            (:SSL_accept, libssl),
-            Cint,
-            (SSL,),
-            ssl.ssl
-        )
+        ret = @geterror ssl :accept ssl_accept(ssl.ssl)
 
         if ret == SSL_ERROR_NONE
             break
