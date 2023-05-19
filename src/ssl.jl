@@ -253,16 +253,15 @@ function ssl_disconnect(ssl::SSL)
         Cint,
         (SSL,),
         ssl)
-    @show "ssl_disconnect", result
-
-    if result == 0
-        result = ccall(
-            (:SSL_shutdown, libssl),
-            Cint,
-            (SSL,),
-            ssl)
-    end
-    @show "ssl_disconnect", result
+    #@show "ssl_disconnect", result
+    #if result == 0
+    #    result = ccall(
+    #        (:SSL_shutdown, libssl),
+    #        Cint,
+    #        (SSL,),
+    #        ssl)
+    #end
+    #@show "ssl_disconnect", result
     
     return nothing
 end
@@ -526,7 +525,6 @@ end
     Read from the SSL stream.
 """
 function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
-    @show "Base.unsafe_read(ssl::SSLStream", ssl.io, nbytes
     nread = 0
     readbytes = ssl.readbytes
     while nread < nbytes
@@ -539,13 +537,12 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
             nbytes - nread,
             readbytes
         )
-        @show "SSL_read_ex", ret
+
         if ret == SSL_ERROR_NONE
             nread += Base.bitcast(Int, readbytes[])
         elseif ret == SSL_ERROR_WANT_READ
             # this means write is waiting for more data from the underlying socket
             # so call eof on the socket to wait for more bytes to come in
-            @show SSL_ERROR_WANT_READ
             eof(ssl.io) && throw(EOFError())
         elseif ret == SSL_ERROR_WANT_WRITE
             flush(ssl.io)
