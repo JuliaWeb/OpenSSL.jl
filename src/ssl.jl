@@ -242,26 +242,28 @@ function ssl_accept(ssl::SSL)
         Cint,
         (SSL,),
         ssl)
-
-    #TODO not enabled for now
-    #ccall(
-    #    (:SSL_set_read_ahead, libssl),
-    #    Cvoid,
-    #    (SSL, Cint),
-    #    ssl,
-    #    Int32(1))
-    #return nothing
 end
 
 """
     Shut down a TLS/SSL connection.
 """
 function ssl_disconnect(ssl::SSL)
-    ccall(
+    result = ccall(
         (:SSL_shutdown, libssl),
         Cint,
         (SSL,),
         ssl)
+    @show "ssl_disconnect", result
+
+    if result == 0
+        result = ccall(
+            (:SSL_shutdown, libssl),
+            Cint,
+            (SSL,),
+            ssl)
+    end
+    @show "ssl_disconnect", result
+    
     return nothing
 end
 
@@ -324,7 +326,7 @@ macro geterror(ssl, op, expr)
     esc(quote
         # lock our SSLStream while we clear errors
         # make a ccall, then check the error queue
-        Base.@lock ssl.lock begin
+        lock(ssl.lock) do
             # check that SSL is still open before ccall
             $ssl.closed && throwio($op)
             # clear the current error queue before openssl ccall
@@ -438,18 +440,6 @@ function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
             Cint(1))
     end
 
-    ret = @geterror ssl :peek_ex ccall(
-        (:SSL_peek_ex, libssl),
-        Cint,
-        (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
-        ssl.ssl,
-        ssl.peekbuf,
-        1,
-        ssl.peekbytes
-    )
-    @show "connect", ret
-    #return nothing
-
     return
 end
 
@@ -470,9 +460,49 @@ function hostname!(ssl::SSLStream, host)
     end
 end
 
+"""
+"""
+
 function Sockets.accept(ssl::SSLStream)
+"""
     while true
-        ret = @geterror ssl :accept ssl_accept(ssl.ssl)
+        _ret = ssl_accept(ssl.ssl)
+        if _ret != 1
+            ret = get_error(ssl.ssl, _ret)
+
+            if ret == SSL_ERROR_NONE
+                break
+            elseif ret == SSL_ERROR_WANT_READ
+                # this means connect is waiting for more data from the underlying socket
+                # so call eof on the socket to wait for more bytes to come in
+                eof(ssl.io) && throw(EOFError())
+            else
+                throw(Base.IOError(OpenSSLError(ret).msg, 0))
+            end
+        else
+            break
+        end
+    end
+
+    ret = @geterror ssl :peek ccall(
+        (:SSL_peek_ex, libssl),
+        Cint,
+        (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
+        ssl.ssl,
+        ssl.peekbuf,
+        1,
+        ssl.peekbytes
+    )
+"""
+
+    while true
+        ret = @geterror ssl :ssl_accept ccall(
+            (:SSL_accept, libssl),
+            Cint,
+            (SSL,),
+            ssl.ssl
+        )
+
         if ret == SSL_ERROR_NONE
             break
         elseif ret == SSL_ERROR_WANT_READ
@@ -496,6 +526,7 @@ end
     Read from the SSL stream.
 """
 function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
+    @show "Base.unsafe_read(ssl::SSLStream", ssl.io, nbytes
     nread = 0
     readbytes = ssl.readbytes
     while nread < nbytes
@@ -508,6 +539,7 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
             nbytes - nread,
             readbytes
         )
+        @show "SSL_read_ex", ret
         if ret == SSL_ERROR_NONE
             nread += Base.bitcast(Int, readbytes[])
         elseif ret == SSL_ERROR_WANT_READ
