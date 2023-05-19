@@ -437,6 +437,19 @@ function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
             ssl.ssl,
             Cint(1))
     end
+
+    ret = @geterror ssl :peek_ex ccall(
+        (:SSL_peek_ex, libssl),
+        Cint,
+        (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
+        ssl.ssl,
+        ssl.peekbuf,
+        1,
+        ssl.peekbytes
+    )
+    @show "connect", ret
+    #return nothing
+
     return
 end
 
@@ -458,8 +471,25 @@ function hostname!(ssl::SSLStream, host)
 end
 
 function Sockets.accept(ssl::SSLStream)
-    ret = @geterror ssl :accept ssl_accept(ssl.ssl)
-    @show "Sockets.accept SSLStream",  ret
+    while true
+        ret = @geterror ssl :accept ssl_accept(ssl.ssl)
+        if ret == SSL_ERROR_NONE
+            break
+        elseif ret == SSL_ERROR_WANT_READ
+            # this means connect is waiting for more data from the underlying socket
+            # so call eof on the socket to wait for more bytes to come in
+            eof(ssl.io) && throw(EOFError())
+        else
+            throw(Base.IOError(OpenSSLError(ret).msg, 0))
+        end
+    end
+
+    ccall(
+        (:SSL_set_read_ahead, libssl),
+        Cvoid,
+        (SSL, Cint),
+        ssl.ssl,
+        Int32(1))
 end
 
 """
