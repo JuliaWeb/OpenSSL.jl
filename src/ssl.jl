@@ -51,6 +51,7 @@ end
 
 function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
     try
+        bio_clear_flags(bio)
         io = bio_get_data(bio)::TCPSocket
         written = unsafe_write(io, in, inlen)
         return Cint(written)
