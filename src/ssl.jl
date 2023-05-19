@@ -460,40 +460,9 @@ function hostname!(ssl::SSLStream, host)
 end
 
 """
+    Accept SSL session connection request from a client application.
 """
-
 function Sockets.accept(ssl::SSLStream)
-"""
-    while true
-        _ret = ssl_accept(ssl.ssl)
-        if _ret != 1
-            ret = get_error(ssl.ssl, _ret)
-
-            if ret == SSL_ERROR_NONE
-                break
-            elseif ret == SSL_ERROR_WANT_READ
-                # this means connect is waiting for more data from the underlying socket
-                # so call eof on the socket to wait for more bytes to come in
-                eof(ssl.io) && throw(EOFError())
-            else
-                throw(Base.IOError(OpenSSLError(ret).msg, 0))
-            end
-        else
-            break
-        end
-    end
-
-    ret = @geterror ssl :peek ccall(
-        (:SSL_peek_ex, libssl),
-        Cint,
-        (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
-        ssl.ssl,
-        ssl.peekbuf,
-        1,
-        ssl.peekbytes
-    )
-"""
-
     while true
         ret = @geterror ssl :ssl_accept ccall(
             (:SSL_accept, libssl),
