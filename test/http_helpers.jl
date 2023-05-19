@@ -53,8 +53,8 @@ function test_server()
     unsafe_write(ssl, pointer(reply), length(reply))
 
     #TODO bug
-    #close(ssl)
-    #finalize(ssl_ctx)
+    close(ssl)
+    finalize(ssl_ctx)
 
     return nothing
 end
@@ -79,17 +79,15 @@ function test_client()
     request_str = "GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\nRequest_body."
 
     written = unsafe_write(ssl, pointer(request_str), length(request_str))
+    @test length(request_str) == written
 
-    sleep(1)
+    # wait for the response.
+    while bytesavailable(ssl) == 0
+        @show "[==>] calling eof"
+        eof(ssl)
+    end
 
-    # TODO, BUG
-    # eof required
-    #
-    #@test length(request_str) == written
-
-    eof(ssl)
     response_str = String(readavailable(ssl))
-   
 
     @test response_str == "reply: $(request_str)"
     @show response_str
