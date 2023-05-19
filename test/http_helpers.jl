@@ -53,6 +53,11 @@ function test_server()
 
     unsafe_write(ssl, pointer(reply), length(reply))
 
+    # Wait for the client confirmation then disconnect.
+    while bytesavailable(ssl) == 0
+        eof(ssl)
+    end
+
     close(ssl)
     finalize(ssl_ctx)
 
@@ -91,6 +96,9 @@ function test_client()
 
     @test response_str == "reply: $(request_str)"
     @show response_str
+
+    # Send a message again, that is the information for the server to disonnect.
+    written = unsafe_write(ssl, pointer(request_str), length(request_str))
 
     close(ssl)
     finalize(ssl_ctx)
