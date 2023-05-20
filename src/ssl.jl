@@ -182,7 +182,7 @@ end
 mutable struct SSL
     ssl::Ptr{Cvoid}
 
-    function SSL(ssl_context::SSLContext, read_bio::BIO, write_bio::BIO)::SSL
+    function SSL(ssl_context::SSLContext, read_bio_stream::BIOStream{T}, write_bio_stream::BIOStream{T})::SSL where {T<:IO}
         ssl = ccall(
             (:SSL_new, libssl),
             Ptr{Cvoid},
@@ -197,10 +197,10 @@ mutable struct SSL
         ccall(
             (:SSL_set_bio, libssl),
             Cvoid,
-            (SSL, BIO, BIO),
+            (SSL, BIOStream{T}, BIOStream{T}),
             ssl,
-            read_bio,
-            write_bio)
+            read_bio_stream,
+            write_bio_stream)
 
         return ssl
     end
@@ -272,8 +272,8 @@ end
 mutable struct SSLStream <: IO
     ssl::SSL
     ssl_context::SSLContext
-    rbio::BIO
-    wbio::BIO
+    rbio::BIOStream{TCPSocket}
+    wbio::BIOStream{TCPSocket}
     io::TCPSocket
     # used in `eof` where we want the call to `eof` on the underlying
     # socket and the SSL_peek call that processes bytes to be seen
@@ -293,8 +293,8 @@ mutable struct SSLStream <: IO
 
     function SSLStream(ssl_context::SSLContext, io::TCPSocket)
         # Create a read and write BIOs.
-        bio_read::BIO = BIO(io; finalize=false)
-        bio_write::BIO = BIO(io; finalize=false)
+        bio_read = BIOStream(io; finalize=false)
+        bio_write = BIOStream(io; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
         return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false)
     end
