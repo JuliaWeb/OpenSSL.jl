@@ -1553,62 +1553,6 @@ mutable struct BIO
     BIO(bio::Ptr{Cvoid}) = new(bio)
 
     """
-        Creates a BIO object using IO stream method.
-        The BIO object is not registered with the finalizer.
-    """
-    function BIO(io::T; finalize::Bool=true) where {T<:IO}
-        bio = ccall(
-            (:BIO_new, libcrypto),
-            Ptr{Cvoid},
-            (BIOMethod,),
-            BIO_STREAM_METHOD.x)
-        if bio == C_NULL
-            throw(OpenSSLError())
-        end
-
-        bio = new(bio)
-        finalize && finalizer(free, bio)
-
-        # note that `io` must be held as a reference somewhere else
-        # since it is not referenced by the BIO directly
-        # e.g. in SSLStream, we keep the `io` reference that is passed to
-        # the read/write BIOs
-        ccall(
-            (:BIO_set_data, libcrypto),
-            Cvoid,
-            (BIO, Ptr{Cvoid}),
-            bio,
-            pointer_from_objref(io))
-
-        # Set BIO as non-blocking
-        ccall(
-            (:BIO_ctrl, libcrypto),
-            Cint,
-            (BIO, Cint, Cint, Ptr{Cvoid}),
-            bio,
-            102,
-            1,
-            C_NULL)
-
-        # Mark BIO as initalized.
-        ccall(
-            (:BIO_set_init, libcrypto),
-            Cvoid,
-            (BIO, Cint),
-            bio,
-            1)
-
-        ccall(
-            (:BIO_set_shutdown, libcrypto),
-            Cvoid,
-            (BIO, Cint),
-            bio,
-            0)
-
-        return bio
-    end
-
-    """
         Creates BIO for given BIOMethod.
     """
     function BIO(bio_method::BIOMethod)
@@ -1708,6 +1652,73 @@ Base.write(bio::BIO, out_data) = return unsafe_write(bio, pointer(out_data), len
 """
 mutable struct BIOStream{T<:IO}
     bio::Ptr{Cvoid}
+
+    """
+        Creates a BIOStream object using IO stream method.
+        The BIOStream object is not registered with the finalizer.
+    """
+    function BIOStream(io::T; finalize::Bool=true) where {T<:IO}
+        bio = ccall(
+            (:BIO_new, libcrypto),
+            Ptr{Cvoid},
+            (BIOMethod,),
+            BIO_STREAM_METHOD.x)
+        if bio == C_NULL
+            throw(OpenSSLError())
+        end
+
+        bio_stream = new{T}(bio)
+        finalize && finalizer(free, bio_stream)
+
+        # note that `io` must be held as a reference somewhere else
+        # since it is not referenced by the BIO directly
+        # e.g. in SSLStream, we keep the `io` reference that is passed to
+        # the read/write BIOs
+        ccall(
+            (:BIO_set_data, libcrypto),
+            Cvoid,
+            (BIOStream{T}, Ptr{Cvoid}),
+            bio_stream,
+            pointer_from_objref(io))
+
+        # Set BIO as non-blocking
+        ccall(
+            (:BIO_ctrl, libcrypto),
+            Cint,
+            (BIOStream{T}, Cint, Cint, Ptr{Cvoid}),
+            bio_stream,
+            102,
+            1,
+            C_NULL)
+
+        # Mark BIO as initalized.
+        ccall(
+            (:BIO_set_init, libcrypto),
+            Cvoid,
+            (BIOStream{T}, Cint),
+            bio_stream,
+            1)
+
+        ccall(
+            (:BIO_set_shutdown, libcrypto),
+            Cvoid,
+            (BIOStream{T}, Cint),
+            bio_stream,
+            0)
+
+        return bio_stream
+    end
+end
+
+function free(bio_stream::BIOStream{T}) where {T<:IO}
+    ccall(
+        (:BIO_free, libcrypto),
+        Cvoid,
+        (BIOStream{T},),
+        bio_stream)
+
+    bio_stream.bio = C_NULL
+    return nothing
 end
 
 function bio_stream_get_io(bio_stream::BIOStream{T})::T where {T<:IO}
@@ -1718,6 +1729,24 @@ function bio_stream_get_io(bio_stream::BIOStream{T})::T where {T<:IO}
         bio_stream)
     return unsafe_pointer_to_objref(data)::T
 end
+
+"""
+    BIO write.
+"""
+function Base.unsafe_write(bio_stream::BIOStream{T}, out_buffer::Ptr{UInt8}, out_length::Int) where {T<:IO}
+    result = ccall(
+        (:BIO_write, libcrypto),
+        Cint,
+        (BIOStream{T}, Ptr{Cvoid}, Cint),
+        bio_stream,
+        out_buffer,
+        out_length)
+    if result < 0
+        throw(OpenSSLError())
+    end
+end
+
+Base.write(bio_stream::BIOStream{T}, out_data) where {T<:IO} = return unsafe_write(bio_stream, pointer(out_data), length(out_data))
 
 """
     BIOStream callbacks.
@@ -1995,24 +2024,24 @@ function Base.:(==)(evp_pkey_1::EvpPKey, evp_pkey_2::EvpPKey)
     return result == 1
 end
 
-function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
-    bio = BIO(io)
+function Base.write(io::T, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL)) where {T<:IO}
+    bio_stream = BIOStream(io)
 
-    GC.@preserve io begin
-        if ccall(
-            (:PEM_write_bio_PrivateKey, libcrypto),
-            Cint,
-            (BIO, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
-            bio,
-            evp_pkey,
-            evp_cipher,
-            C_NULL,
-            0,
-            0,
-            C_NULL) != 1
-            throw(OpenSSLError())
-        end
+    if ccall(
+        (:PEM_write_bio_PrivateKey, libcrypto),
+        Cint,
+        (BIOStream{T}, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
+        bio_stream,
+        evp_pkey,
+        evp_cipher,
+        C_NULL,
+        0,
+        0,
+        C_NULL) != 1
+        throw(OpenSSLError())
     end
+
+    free(bio_stream)
 end
 
 function get_key_type(evp_pkey::EvpPKey)::EvpPKeyType
@@ -2401,19 +2430,19 @@ function Base.:(==)(x509_cert_1::X509Certificate, x509_cert_2::X509Certificate)
     return result == 0
 end
 
-function Base.write(io::IO, x509_cert::X509Certificate)
-    bio = BIO(io)
+function Base.write(io::T, x509_cert::X509Certificate) where {T<:IO}
+    bio_stream = BIOStream(io)
 
-    GC.@preserve io begin
-        if ccall(
-            (:PEM_write_bio_X509, libcrypto),
-            Cint,
-            (BIO, X509Certificate),
-            bio,
-            x509_cert) != 1
-            throw(OpenSSLError())
-        end
+    if ccall(
+        (:PEM_write_bio_X509, libcrypto),
+        Cint,
+        (BIOStream{T}, X509Certificate),
+        bio_stream,
+        x509_cert) != 1
+        throw(OpenSSLError())
     end
+
+    free(bio_stream)
 end
 
 function sign_certificate(x509_cert::X509Certificate, evp_pkey::EvpPKey)
@@ -2688,18 +2717,18 @@ function free(x509_req::X509Request)
 end
 
 function Base.write(io::IO, x509_req::X509Request)
-    bio = BIO(io)
+    bio_stream = BIOStream(io)
 
-    GC.@preserve io begin
-        if ccall(
-            (:PEM_write_bio_X509_REQ, libcrypto),
-            Cint,
-            (BIO, X509Request),
-            bio,
-            x509_req) != 1
-            throw(OpenSSLError())
-        end
+    if ccall(
+        (:PEM_write_bio_X509_REQ, libcrypto),
+        Cint,
+        (BIO, X509Request),
+        bio_stream,
+        x509_req) != 1
+        throw(OpenSSLError())
     end
+
+    free(bio_stream)
 end
 
 function add_extensions(x509_req::X509Request, x509_exts::StackOf{X509Extension})
