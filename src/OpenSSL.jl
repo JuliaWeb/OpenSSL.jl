@@ -1419,85 +1419,6 @@ mutable struct BIOMethod
     bio_method::Ptr{Cvoid}
 
     BIOMethod(bio_method::Ptr{Cvoid}) = new(bio_method)
-
-    function BIOMethod(bio_type::String)
-        bio_method_index = ccall(
-            (:BIO_get_new_index, libcrypto),
-            Cint,
-            ())
-        if bio_method_index == -1
-            throw(OpenSSLError())
-        end
-
-        bio_method = ccall(
-            (:BIO_meth_new, libcrypto),
-            Ptr{Cvoid},
-            (Cint, Cstring),
-            bio_method_index,
-            bio_type)
-        if bio_method == C_NULL
-            throw(OpenSSLError())
-        end
-
-        bio_method = new(bio_method)
-        finalizer(free, bio_method)
-
-        if ccall(
-            (:BIO_meth_set_create, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_create_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_destroy, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_destroy_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_read, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_read_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_write, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_write_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_puts, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_puts_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_ctrl, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_ctrl_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        return bio_method
-    end
 end
 
 """
@@ -1662,7 +1583,7 @@ mutable struct BIOStream{T<:IO}
             (:BIO_new, libcrypto),
             Ptr{Cvoid},
             (BIOMethod,),
-            BIO_STREAM_METHOD.x)
+            BIO_STREAM_METHOD_IO.x)
         if bio == C_NULL
             throw(OpenSSLError())
         end
@@ -1827,7 +1748,7 @@ on_bio_stream_ctrl(bio_stream::BIOStream{T}, cmd::BIOCtrl, num::Clong, ptr::Ptr{
 """
     BIO Stream callbacks.
 """
-struct BIOStreamCallbacks
+struct BIOStreamCallbacks{T<:IO}
     on_bio_create_ptr::Ptr{Nothing}
     on_bio_destroy_ptr::Ptr{Nothing}
     on_bio_read_ptr::Ptr{Nothing}
@@ -1835,13 +1756,13 @@ struct BIOStreamCallbacks
     on_bio_puts_ptr::Ptr{Nothing}
     on_bio_ctrl_ptr::Ptr{Nothing}
 
-    function BIOStreamCallbacks()
-        on_bio_create_ptr = @cfunction on_bio_stream_create Cint (BIOStream{IO},)
-        on_bio_destroy_ptr = @cfunction on_bio_stream_destroy Cint (BIOStream{IO},)
-        on_bio_read_ptr = @cfunction on_bio_stream_read Cint (BIOStream{IO}, Ptr{Cchar}, Cint)
-        on_bio_write_ptr = @cfunction on_bio_stream_write Cint (BIOStream{IO}, Ptr{Cchar}, Cint)
-        on_bio_puts_ptr = @cfunction on_bio_stream_puts Cint (BIOStream{IO}, Ptr{Cchar})
-        on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Clong (BIOStream{IO}, BIOCtrl, Clong, Ptr{Cvoid})
+    function BIOStreamCallbacks{T}() where {T<:IO}
+        on_bio_create_ptr = @cfunction on_bio_stream_create Cint (BIOStream{T},)
+        on_bio_destroy_ptr = @cfunction on_bio_stream_destroy Cint (BIOStream{T},)
+        on_bio_read_ptr = @cfunction on_bio_stream_read Cint (BIOStream{T}, Ptr{Cchar}, Cint)
+        on_bio_write_ptr = @cfunction on_bio_stream_write Cint (BIOStream{T}, Ptr{Cchar}, Cint)
+        on_bio_puts_ptr = @cfunction on_bio_stream_puts Cint (BIOStream{T}, Ptr{Cchar})
+        on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Clong (BIOStream{T}, BIOCtrl, Clong, Ptr{Cvoid})
 
         return new(
             on_bio_create_ptr,
@@ -1851,6 +1772,85 @@ struct BIOStreamCallbacks
             on_bio_puts_ptr,
             on_bio_ctrl_ptr)
     end
+end
+
+function BIOMethod(bio_type::String, bio_stream_callbacks::BIOStreamCallbacks{T}) where {T<:IO}
+    bio_method_index = ccall(
+        (:BIO_get_new_index, libcrypto),
+        Cint,
+        ())
+    if bio_method_index == -1
+        throw(OpenSSLError())
+    end
+
+    bio_method = ccall(
+        (:BIO_meth_new, libcrypto),
+        Ptr{Cvoid},
+        (Cint, Cstring),
+        bio_method_index,
+        bio_type)
+    if bio_method == C_NULL
+        throw(OpenSSLError())
+    end
+
+    bio_method = BIOMethod(bio_method)
+    finalizer(free, bio_method)
+
+    if ccall(
+        (:BIO_meth_set_create, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_create_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_destroy, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_destroy_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_read, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_read_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_write, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_write_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_puts, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_puts_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_ctrl, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_ctrl_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    return bio_method
 end
 
 """
@@ -3270,16 +3270,25 @@ end
 include("ssl.jl")
 
 const OPEN_SSL_INIT = Ref{OpenSSLInit}()
-const BIO_STREAM_CALLBACKS = Ref{BIOStreamCallbacks}()
-const BIO_STREAM_METHOD = Ref{BIOMethod}()
+const BIO_STREAM_CALLBACKS_IO = Ref{BIOStreamCallbacks{IO}}()
+const BIO_STREAM_CALLBACKS_TCPSOCKET = Ref{BIOStreamCallbacks{TCPSocket}}()
+const BIO_STREAM_METHOD_IO = Ref{BIOMethod}()
+const BIO_STREAM_METHOD_TCPSOCKET = Ref{BIOMethod}()
 
 """
     Initialize module.
 """
 function __init__()
     OPEN_SSL_INIT.x = OpenSSLInit()
-    BIO_STREAM_CALLBACKS.x = BIOStreamCallbacks()
-    BIO_STREAM_METHOD.x = BIOMethod("BIO_STREAM_METHOD")
+    BIO_STREAM_CALLBACKS_IO.x = BIOStreamCallbacks{IO}()
+    BIO_STREAM_CALLBACKS_TCPSOCKET.x = BIOStreamCallbacks{TCPSocket}()
+    BIO_STREAM_METHOD_IO.x = BIOMethod("BIO_STREAM_METHOD_IO", BIO_STREAM_CALLBACKS_IO.x)
+    BIO_STREAM_METHOD_TCPSOCKET.x = BIOMethod("BIO_STREAM_METHOD_TCPSOCKET", BIO_STREAM_CALLBACKS_TCPSOCKET.x)
+
+    @show BIO_STREAM_METHOD_IO.x
+    @show BIO_STREAM_METHOD_TCPSOCKET.x
+    @show BIO_STREAM_CALLBACKS_IO.x
+    @show BIO_STREAM_CALLBACKS_TCPSOCKET.x
 
     # Set the openssl provider search path
     if version_number() ≥ v"3"

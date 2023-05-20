@@ -24,12 +24,19 @@ end
 
 # Verifies calling into OpenSSL library.
 @testset "OpenSSL" begin
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_create_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_destroy_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_read_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_write_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_puts_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_ctrl_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_create_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_destroy_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_read_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_write_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_puts_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_ctrl_ptr != C_NULL
+
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_create_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_create_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_destroy_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_destroy_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_read_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_read_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_write_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_write_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_puts_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_puts_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_ctrl_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_ctrl_ptr
 end
 
 @testset "RandomBytes" begin
