@@ -88,7 +88,6 @@ function test_client()
 
     # wait for the response.
     while bytesavailable(ssl) == 0
-        @show "[==>] calling eof"
         eof(ssl)
     end
 

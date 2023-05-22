@@ -1687,8 +1687,8 @@ function bio_set_flags(bio_stream::BIOStream{T}, flags) where {T<:IO}
         bio_stream, flags)
 end
 
-bio_set_read_retry(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
-bio_clear_flags(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, 0x00)
+bio_stream_set_read_retry(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
+bio_stream_clear_flags(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, 0x00)
 
 """
 static int fd_read(BIO *b, char *out, int outl)
@@ -1712,12 +1712,12 @@ static int fd_read(BIO *b, char *out, int outl)
 
 function on_bio_stream_read(bio_stream::BIOStream{T}, out::Ptr{Cchar}, outlen::Cint) where {T<:IO}
     try
-        bio_clear_flags(bio_stream)
+        bio_stream_clear_flags(bio_stream)
         io::T = bio_stream_get_io(bio_stream)
 
         n = bytesavailable(io)
         if n == 0
-            bio_set_read_retry(bio_stream)
+            bio_stream_set_read_retry(bio_stream)
             return Cint(0)
         end
 
@@ -3284,11 +3284,6 @@ function __init__()
     BIO_STREAM_CALLBACKS_TCPSOCKET.x = BIOStreamCallbacks{TCPSocket}()
     BIO_STREAM_METHOD_IO.x = BIOMethod("BIO_STREAM_METHOD_IO", BIO_STREAM_CALLBACKS_IO.x)
     BIO_STREAM_METHOD_TCPSOCKET.x = BIOMethod("BIO_STREAM_METHOD_TCPSOCKET", BIO_STREAM_CALLBACKS_TCPSOCKET.x)
-
-    @show BIO_STREAM_METHOD_IO.x
-    @show BIO_STREAM_METHOD_TCPSOCKET.x
-    @show BIO_STREAM_CALLBACKS_IO.x
-    @show BIO_STREAM_CALLBACKS_TCPSOCKET.x
 
     # Set the openssl provider search path
     if version_number() ≥ v"3"
