@@ -1574,6 +1574,10 @@ Base.write(bio::BIO, out_data) = return unsafe_write(bio, pointer(out_data), len
 mutable struct BIOStream{T<:IO}
     bio::Ptr{Cvoid}
 
+    get_bio_stream_method(::T) where {T<:IO} = BIO_STREAM_METHOD_IO.x
+
+    get_bio_stream_method(::TCPSocket) = BIO_STREAM_METHOD_TCPSOCKET.x
+
     """
         Creates a BIOStream object using IO stream method.
         The BIOStream object is not registered with the finalizer.
@@ -1583,7 +1587,7 @@ mutable struct BIOStream{T<:IO}
             (:BIO_new, libcrypto),
             Ptr{Cvoid},
             (BIOMethod,),
-            BIO_STREAM_METHOD_IO.x)
+            get_bio_stream_method(io))
         if bio == C_NULL
             throw(OpenSSLError())
         end
