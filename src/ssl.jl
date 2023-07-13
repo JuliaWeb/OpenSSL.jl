@@ -60,10 +60,6 @@ end
 
 function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
     try
-<<<<<<< Updated upstream
-        io = bio_get_data(bio)::TCPSocket
-        written = unsafe_write(io, in, inlen)
-=======
         bio_clear_flags(bio)
         io = bio_get_data(bio)
         if io isa TCPSocket
@@ -71,7 +67,6 @@ function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
         else
             written = unsafe_write(io, in, inlen)
         end
->>>>>>> Stashed changes
         return Cint(written)
     catch e
         # we don't want to throw a Julia exception from a C callback
@@ -419,7 +414,7 @@ mutable struct SSLStream{T} <: IO
         bio_read::BIO = BIO(io; finalize=false)
         bio_write::BIO = BIO(io; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
-        return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false)
+        return new{T}(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false)
     end
 end
 
