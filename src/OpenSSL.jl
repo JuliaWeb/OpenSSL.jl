@@ -181,7 +181,7 @@ const BIO_TYPE_SOURCE_SINK = 0x0400
     BIO_TYPE_MD = 8 | BIO_TYPE_FILTER,
     #
     BIO_TYPE_BUFFER = 9 | BIO_TYPE_FILTER,
-    # 
+    #
     BIO_TYPE_CIPHER = 10 | BIO_TYPE_FILTER,
     #
     BIO_TYPE_BASE64 = 11 | BIO_TYPE_FILTER,
@@ -1748,9 +1748,9 @@ function Dates.adjust(asn1_time::Asn1Time, seconds::Second)
     end
 end
 
-Dates.adjust(asn1_time::Asn1Time, days::Day) = adjust(asn1_time, Second(days))
+Dates.adjust(asn1_time::Asn1Time, days::Day) = Dates.adjust(asn1_time, Second(days))
 
-Dates.adjust(asn1_time::Asn1Time, years::Year) = adjust(asn1_time, Day(365 * years.value))
+Dates.adjust(asn1_time::Asn1Time, years::Year) = Dates.adjust(asn1_time, Day(365 * years.value))
 
 """
     EVP_PKEY, EVP Public Key interface.
