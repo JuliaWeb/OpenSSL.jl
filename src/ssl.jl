@@ -1,99 +1,4 @@
 """
-    BIO Stream callbacks.
-"""
-
-"""
-    Called to initialize new BIO Stream object.
-"""
-on_bio_stream_create(bio::BIO) = Cint(1)
-on_bio_stream_destroy(bio::BIO)::Cint = Cint(0)
-
-function bio_get_data(bio::BIO)
-    data = ccall(
-        (:BIO_get_data, libcrypto),
-        Ptr{Cvoid},
-        (BIO,),
-        bio)
-    return unsafe_pointer_to_objref(data)
-end
-
-const BIO_FLAGS_SHOULD_RETRY = 0x08
-const BIO_FLAGS_READ = 0x01
-const BIO_FLAGS_WRITE = 0x02
-const BIO_FLAGS_IO_SPECIAL = 0x04
-
-function bio_set_flags(bio::BIO, flags)
-    return ccall(
-        (:BIO_set_flags, libcrypto),
-        Cint,
-        (BIO, Cint),
-        bio, flags)
-end
-bio_set_read_retry(bio::BIO) = bio_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
-bio_clear_flags(bio::BIO) = bio_set_flags(bio, 0x00)
-
-function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
-    try
-        bio_clear_flags(bio)
-        io = bio_get_data(bio)::TCPSocket
-        n = bytesavailable(io)
-        if n == 0
-            bio_set_read_retry(bio)
-            return Cint(0)
-        end
-        unsafe_read(io, out, min(UInt(n), outlen))
-        return Cint(min(n, outlen))
-    catch e
-        # we don't want to throw a Julia exception from a C callback
-        return Cint(0)
-    end
-end
-
-function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
-    try
-        io = bio_get_data(bio)::TCPSocket
-        written = unsafe_write(io, in, inlen)
-        return Cint(written)
-    catch e
-        # we don't want to throw a Julia exception from a C callback
-        return Cint(0)
-    end
-end
-
-on_bio_stream_puts(bio::BIO, in::Ptr{Cchar})::Cint = Cint(0)
-
-on_bio_stream_ctrl(bio::BIO, cmd::BIOCtrl, num::Clong, ptr::Ptr{Cvoid}) = Clong(1)
-
-"""
-    BIO Stream callbacks.
-"""
-struct BIOStreamCallbacks
-    on_bio_create_ptr::Ptr{Nothing}
-    on_bio_destroy_ptr::Ptr{Nothing}
-    on_bio_read_ptr::Ptr{Nothing}
-    on_bio_write_ptr::Ptr{Nothing}
-    on_bio_puts_ptr::Ptr{Nothing}
-    on_bio_ctrl_ptr::Ptr{Nothing}
-
-    function BIOStreamCallbacks()
-        on_bio_create_ptr = @cfunction on_bio_stream_create Cint (BIO,)
-        on_bio_destroy_ptr = @cfunction on_bio_stream_destroy Cint (BIO,)
-        on_bio_read_ptr = @cfunction on_bio_stream_read Cint (BIO, Ptr{Cchar}, Cint)
-        on_bio_write_ptr = @cfunction on_bio_stream_write Cint (BIO, Ptr{Cchar}, Cint)
-        on_bio_puts_ptr = @cfunction on_bio_stream_puts Cint (BIO, Ptr{Cchar})
-        on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Clong (BIO, BIOCtrl, Clong, Ptr{Cvoid})
-
-        return new(
-            on_bio_create_ptr,
-            on_bio_destroy_ptr,
-            on_bio_read_ptr,
-            on_bio_write_ptr,
-            on_bio_puts_ptr,
-            on_bio_ctrl_ptr)
-    end
-end
-
-"""
     SSLMethod.
     TLSClientMethod.
 """
@@ -277,7 +182,7 @@ end
 mutable struct SSL
     ssl::Ptr{Cvoid}
 
-    function SSL(ssl_context::SSLContext, read_bio::BIO, write_bio::BIO)::SSL
+    function SSL(ssl_context::SSLContext, read_bio_stream::BIOStream{T}, write_bio_stream::BIOStream{T})::SSL where {T<:IO}
         ssl = ccall(
             (:SSL_new, libssl),
             Ptr{Cvoid},
@@ -292,10 +197,10 @@ mutable struct SSL
         ccall(
             (:SSL_set_bio, libssl),
             Cvoid,
-            (SSL, BIO, BIO),
+            (SSL, BIOStream{T}, BIOStream{T}),
             ssl,
-            read_bio,
-            write_bio)
+            read_bio_stream,
+            write_bio_stream)
 
         return ssl
     end
@@ -332,32 +237,23 @@ function ssl_connect(ssl::SSL)
 end
 
 function ssl_accept(ssl::SSL)
-    if (ret = ccall(
+    return ccall(
         (:SSL_accept, libssl),
         Cint,
         (SSL,),
-        ssl)) != 1
-        throw(OpenSSLError(ret))
-    end
-
-    ccall(
-        (:SSL_set_read_ahead, libssl),
-        Cvoid,
-        (SSL, Cint),
-        ssl,
-        Int32(1))
-    return nothing
+        ssl)
 end
 
 """
     Shut down a TLS/SSL connection.
 """
 function ssl_disconnect(ssl::SSL)
-    ccall(
+    _ = ccall(
         (:SSL_shutdown, libssl),
         Cint,
         (SSL,),
         ssl)
+
     return nothing
 end
 
@@ -376,8 +272,8 @@ end
 mutable struct SSLStream <: IO
     ssl::SSL
     ssl_context::SSLContext
-    rbio::BIO
-    wbio::BIO
+    rbio::BIOStream{TCPSocket}
+    wbio::BIOStream{TCPSocket}
     io::TCPSocket
     # used in `eof` where we want the call to `eof` on the underlying
     # socket and the SSL_peek call that processes bytes to be seen
@@ -397,8 +293,8 @@ mutable struct SSLStream <: IO
 
     function SSLStream(ssl_context::SSLContext, io::TCPSocket)
         # Create a read and write BIOs.
-        bio_read::BIO = BIO(io; finalize=false)
-        bio_write::BIO = BIO(io; finalize=false)
+        bio_read = BIOStream(io; finalize=false)
+        bio_write = BIOStream(io; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
         return new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false)
     end
@@ -420,7 +316,7 @@ macro geterror(ssl, op, expr)
     esc(quote
         # lock our SSLStream while we clear errors
         # make a ccall, then check the error queue
-        Base.@lock ssl.lock begin
+        lock(ssl.lock) do
             # check that SSL is still open before ccall
             $ssl.closed && throwio($op)
             # clear the current error queue before openssl ccall
@@ -533,6 +429,7 @@ function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
             ssl.ssl,
             Cint(1))
     end
+
     return
 end
 
@@ -553,8 +450,30 @@ function hostname!(ssl::SSLStream, host)
     end
 end
 
+"""
+    Accept SSL session connection request from a client application.
+"""
 function Sockets.accept(ssl::SSLStream)
-    ssl_accept(ssl.ssl)
+    while true
+        ret = @geterror ssl :accept ssl_accept(ssl.ssl)
+
+        if ret == SSL_ERROR_NONE
+            break
+        elseif ret == SSL_ERROR_WANT_READ
+            # this means connect is waiting for more data from the underlying socket
+            # so call eof on the socket to wait for more bytes to come in
+            eof(ssl.io) && throw(EOFError())
+        else
+            throw(Base.IOError(OpenSSLError(ret).msg, 0))
+        end
+    end
+
+    ccall(
+        (:SSL_set_read_ahead, libssl),
+        Cvoid,
+        (SSL, Cint),
+        ssl.ssl,
+        Int32(1))
 end
 
 """
@@ -573,6 +492,7 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
             nbytes - nread,
             readbytes
         )
+
         if ret == SSL_ERROR_NONE
             nread += Base.bitcast(Int, readbytes[])
         elseif ret == SSL_ERROR_WANT_READ

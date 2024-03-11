@@ -210,6 +210,18 @@ const BIO_TYPE_SOURCE_SINK = 0x0400
     #
     BIO_TYPE_START = 128)
 
+"""
+    These are used in the following macros and are passed to BIO_ctrl().
+"""
+#@enum(BIOFlags::Cint,
+#
+#);
+const BIO_FLAGS_SHOULD_RETRY = 0x08
+const BIO_FLAGS_READ = 0x01
+const BIO_FLAGS_WRITE = 0x02
+const BIO_FLAGS_IO_SPECIAL = 0x04
+
+
 # Some values are reserved until OpenSSL 3.0.0 because they were previously
 # included in SSL_OP_ALL in a 1.1.x release.
 @bitflag SSLOptions::Culong begin
@@ -1407,85 +1419,6 @@ mutable struct BIOMethod
     bio_method::Ptr{Cvoid}
 
     BIOMethod(bio_method::Ptr{Cvoid}) = new(bio_method)
-
-    function BIOMethod(bio_type::String)
-        bio_method_index = ccall(
-            (:BIO_get_new_index, libcrypto),
-            Cint,
-            ())
-        if bio_method_index == -1
-            throw(OpenSSLError())
-        end
-
-        bio_method = ccall(
-            (:BIO_meth_new, libcrypto),
-            Ptr{Cvoid},
-            (Cint, Cstring),
-            bio_method_index,
-            bio_type)
-        if bio_method == C_NULL
-            throw(OpenSSLError())
-        end
-
-        bio_method = new(bio_method)
-        finalizer(free, bio_method)
-
-        if ccall(
-            (:BIO_meth_set_create, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_create_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_destroy, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_destroy_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_read, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_read_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_write, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_write_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_puts, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_puts_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        if ccall(
-            (:BIO_meth_set_ctrl, libcrypto),
-            Cint,
-            (BIOMethod, Ptr{Cvoid}),
-            bio_method,
-            BIO_STREAM_CALLBACKS.x.on_bio_ctrl_ptr) != 1
-            throw(OpenSSLError())
-        end
-
-        return bio_method
-    end
 end
 
 """
@@ -1539,61 +1472,6 @@ mutable struct BIO
     bio::Ptr{Cvoid}
 
     BIO(bio::Ptr{Cvoid}) = new(bio)
-
-    """
-        Creates a BIO object using IO stream method.
-        The BIO object is not registered with the finalizer.
-    """
-    function BIO(data=nothing; finalize::Bool=true)
-        bio = ccall(
-            (:BIO_new, libcrypto),
-            Ptr{Cvoid},
-            (BIOMethod,),
-            BIO_STREAM_METHOD.x)
-        if bio == C_NULL
-            throw(OpenSSLError())
-        end
-
-        bio = new(bio)
-        finalize && finalizer(free, bio)
-
-        # note that `data` must be held as a reference somewhere else
-        # since it is not referenced by the BIO directly
-        # e.g. in SSLStream, we keep the `io` reference that is passed to
-        # the read/write BIOs
-        ccall(
-            (:BIO_set_data, libcrypto),
-            Cvoid,
-            (BIO, Ptr{Cvoid}),
-            bio,
-            data === nothing ? C_NULL : pointer_from_objref(data))
-
-        # Set BIO as non-blocking
-        ccall(
-            (:BIO_ctrl, libcrypto),
-            Cint,
-            (BIO, Cint, Cint, Ptr{Cvoid}),
-            bio,
-            102,
-            1,
-            C_NULL)
-        # Mark BIO as initalized.
-        ccall(
-            (:BIO_set_init, libcrypto),
-            Cvoid,
-            (BIO, Cint),
-            bio,
-            1)
-
-        ccall(
-            (:BIO_set_shutdown, libcrypto),
-            Cvoid,
-            (BIO, Cint),
-            bio,
-            0)
-
-        return bio
-    end
 
     """
         Creates BIO for given BIOMethod.
@@ -1674,7 +1552,6 @@ end
 """
     BIO write.
 """
-## throw error here
 function Base.unsafe_write(bio::BIO, out_buffer::Ptr{UInt8}, out_length::Int)
     result = ccall(
         (:BIO_write, libcrypto),
@@ -1689,6 +1566,296 @@ function Base.unsafe_write(bio::BIO, out_buffer::Ptr{UInt8}, out_length::Int)
 end
 
 Base.write(bio::BIO, out_data) = return unsafe_write(bio, pointer(out_data), length(out_data))
+
+"""
+    BIOStream.
+    BIO with IO.
+"""
+mutable struct BIOStream{T<:IO}
+    bio::Ptr{Cvoid}
+
+    get_bio_stream_method(::T) where {T<:IO} = BIO_STREAM_METHOD_IO.x
+
+    get_bio_stream_method(::TCPSocket) = BIO_STREAM_METHOD_TCPSOCKET.x
+
+    """
+        Creates a BIOStream object using IO stream method.
+        The BIOStream object is not registered with the finalizer.
+    """
+    function BIOStream(io::T; finalize::Bool=true) where {T<:IO}
+        bio = ccall(
+            (:BIO_new, libcrypto),
+            Ptr{Cvoid},
+            (BIOMethod,),
+            get_bio_stream_method(io))
+        if bio == C_NULL
+            throw(OpenSSLError())
+        end
+
+        bio_stream = new{T}(bio)
+        finalize && finalizer(free, bio_stream)
+
+        # note that `io` must be held as a reference somewhere else
+        # since it is not referenced by the BIO directly
+        # e.g. in SSLStream, we keep the `io` reference that is passed to
+        # the read/write BIOs
+        ccall(
+            (:BIO_set_data, libcrypto),
+            Cvoid,
+            (BIOStream{T}, Ptr{Cvoid}),
+            bio_stream,
+            pointer_from_objref(io))
+
+        # Set BIO as non-blocking
+        ccall(
+            (:BIO_ctrl, libcrypto),
+            Cint,
+            (BIOStream{T}, Cint, Cint, Ptr{Cvoid}),
+            bio_stream,
+            102,
+            1,
+            C_NULL)
+
+        # Mark BIO as initalized.
+        ccall(
+            (:BIO_set_init, libcrypto),
+            Cvoid,
+            (BIOStream{T}, Cint),
+            bio_stream,
+            1)
+
+        ccall(
+            (:BIO_set_shutdown, libcrypto),
+            Cvoid,
+            (BIOStream{T}, Cint),
+            bio_stream,
+            0)
+
+        return bio_stream
+    end
+end
+
+function free(bio_stream::BIOStream{T}) where {T<:IO}
+    ccall(
+        (:BIO_free, libcrypto),
+        Cvoid,
+        (BIOStream{T},),
+        bio_stream)
+
+    bio_stream.bio = C_NULL
+    return nothing
+end
+
+function bio_stream_get_io(bio_stream::BIOStream{T})::T where {T<:IO}
+    data = ccall(
+        (:BIO_get_data, libcrypto),
+        Ptr{Cvoid},
+        (BIOStream{T},),
+        bio_stream)
+    return unsafe_pointer_to_objref(data)::T
+end
+
+"""
+    BIO write.
+"""
+function Base.unsafe_write(bio_stream::BIOStream{T}, out_buffer::Ptr{UInt8}, out_length::Int) where {T<:IO}
+    result = ccall(
+        (:BIO_write, libcrypto),
+        Cint,
+        (BIOStream{T}, Ptr{Cvoid}, Cint),
+        bio_stream,
+        out_buffer,
+        out_length)
+    if result < 0
+        throw(OpenSSLError())
+    end
+end
+
+Base.write(bio_stream::BIOStream{T}, out_data) where {T<:IO} = return unsafe_write(bio_stream, pointer(out_data), length(out_data))
+
+"""
+    BIOStream callbacks.
+"""
+
+"""
+    Called to initialize new BIO Stream object.
+"""
+on_bio_stream_create(::BIOStream{T}) where {T<:IO} = Cint(1)
+on_bio_stream_destroy(::BIOStream{T}) where {T<:IO} = Cint(0)
+
+function bio_set_flags(bio_stream::BIOStream{T}, flags) where {T<:IO}
+    return ccall(
+        (:BIO_set_flags, libcrypto),
+        Cint,
+        (BIOStream{T}, Cint),
+        bio_stream, flags)
+end
+
+bio_stream_set_read_retry(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
+bio_stream_clear_flags(bio_stream::BIOStream{T}) where {T<:IO} = bio_set_flags(bio_stream, 0x00)
+
+"""
+static int fd_read(BIO *b, char *out, int outl)
+{
+    int ret = 0;
+
+    if (out != NULL) {
+        clear_sys_error();
+        ret = UP_read(b->num, out, outl);
+        BIO_clear_retry_flags(b);
+        if (ret <= 0) {
+            if (BIO_fd_should_retry(ret))
+                BIO_set_retry_read(b);
+            else if (ret == 0)
+                b->flags |= BIO_FLAGS_IN_EOF;
+        }
+    }
+    return ret;
+}
+"""
+
+function on_bio_stream_read(bio_stream::BIOStream{T}, out::Ptr{Cchar}, outlen::Cint) where {T<:IO}
+    try
+        bio_stream_clear_flags(bio_stream)
+        io::T = bio_stream_get_io(bio_stream)
+
+        n = bytesavailable(io)
+        if n == 0
+            bio_stream_set_read_retry(bio_stream)
+            return Cint(0)
+        end
+
+        bytes_to_read::Cint = min(UInt(n), outlen)
+        unsafe_read(io, out, bytes_to_read)
+        return bytes_to_read
+    catch e
+        # we don't want to throw a Julia exception from a C callback
+        return Cint(-1)
+    end
+end
+
+function on_bio_stream_write(bio_stream::BIOStream{T}, in::Ptr{Cchar}, inlen::Cint)::Cint where {T<:IO}
+    try
+        io::T = bio_stream_get_io(bio_stream)
+        written = unsafe_write(io, in, inlen)
+        return Cint(written)
+    catch e
+        # we don't want to throw a Julia exception from a C callback
+        return Cint(-1)
+    end
+end
+
+on_bio_stream_puts(bio_stream::BIOStream{T}, in::Ptr{Cchar}) where {T<:IO} = Cint(0)
+
+on_bio_stream_ctrl(bio_stream::BIOStream{T}, cmd::BIOCtrl, num::Clong, ptr::Ptr{Cvoid}) where {T<:IO} = Clong(1)
+
+"""
+    BIO Stream callbacks.
+"""
+struct BIOStreamCallbacks{T<:IO}
+    on_bio_create_ptr::Ptr{Nothing}
+    on_bio_destroy_ptr::Ptr{Nothing}
+    on_bio_read_ptr::Ptr{Nothing}
+    on_bio_write_ptr::Ptr{Nothing}
+    on_bio_puts_ptr::Ptr{Nothing}
+    on_bio_ctrl_ptr::Ptr{Nothing}
+
+    function BIOStreamCallbacks{T}() where {T<:IO}
+        on_bio_create_ptr = @cfunction on_bio_stream_create Cint (BIOStream{T},)
+        on_bio_destroy_ptr = @cfunction on_bio_stream_destroy Cint (BIOStream{T},)
+        on_bio_read_ptr = @cfunction on_bio_stream_read Cint (BIOStream{T}, Ptr{Cchar}, Cint)
+        on_bio_write_ptr = @cfunction on_bio_stream_write Cint (BIOStream{T}, Ptr{Cchar}, Cint)
+        on_bio_puts_ptr = @cfunction on_bio_stream_puts Cint (BIOStream{T}, Ptr{Cchar})
+        on_bio_ctrl_ptr = @cfunction on_bio_stream_ctrl Clong (BIOStream{T}, BIOCtrl, Clong, Ptr{Cvoid})
+
+        return new(
+            on_bio_create_ptr,
+            on_bio_destroy_ptr,
+            on_bio_read_ptr,
+            on_bio_write_ptr,
+            on_bio_puts_ptr,
+            on_bio_ctrl_ptr)
+    end
+end
+
+function BIOMethod(bio_type::String, bio_stream_callbacks::BIOStreamCallbacks{T}) where {T<:IO}
+    bio_method_index = ccall(
+        (:BIO_get_new_index, libcrypto),
+        Cint,
+        ())
+    if bio_method_index == -1
+        throw(OpenSSLError())
+    end
+
+    bio_method = ccall(
+        (:BIO_meth_new, libcrypto),
+        Ptr{Cvoid},
+        (Cint, Cstring),
+        bio_method_index,
+        bio_type)
+    if bio_method == C_NULL
+        throw(OpenSSLError())
+    end
+
+    bio_method = BIOMethod(bio_method)
+    finalizer(free, bio_method)
+
+    if ccall(
+        (:BIO_meth_set_create, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_create_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_destroy, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_destroy_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_read, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_read_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_write, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_write_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_puts, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_puts_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    if ccall(
+        (:BIO_meth_set_ctrl, libcrypto),
+        Cint,
+        (BIOMethod, Ptr{Cvoid}),
+        bio_method,
+        bio_stream_callbacks.on_bio_ctrl_ptr) != 1
+        throw(OpenSSLError())
+    end
+
+    return bio_method
+end
 
 """
     ASN1_TIME.
@@ -1861,24 +2028,24 @@ function Base.:(==)(evp_pkey_1::EvpPKey, evp_pkey_2::EvpPKey)
     return result == 1
 end
 
-function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
-    bio = BIO(io)
+function Base.write(io::T, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL)) where {T<:IO}
+    bio_stream = BIOStream(io)
 
-    GC.@preserve io begin
-        if ccall(
-            (:PEM_write_bio_PrivateKey, libcrypto),
-            Cint,
-            (BIO, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
-            bio,
-            evp_pkey,
-            evp_cipher,
-            C_NULL,
-            0,
-            0,
-            C_NULL) != 1
-            throw(OpenSSLError())
-        end
+    if ccall(
+        (:PEM_write_bio_PrivateKey, libcrypto),
+        Cint,
+        (BIOStream{T}, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
+        bio_stream,
+        evp_pkey,
+        evp_cipher,
+        C_NULL,
+        0,
+        0,
+        C_NULL) != 1
+        throw(OpenSSLError())
     end
+
+    free(bio_stream)
 end
 
 function get_key_type(evp_pkey::EvpPKey)::EvpPKeyType
@@ -2267,19 +2434,19 @@ function Base.:(==)(x509_cert_1::X509Certificate, x509_cert_2::X509Certificate)
     return result == 0
 end
 
-function Base.write(io::IO, x509_cert::X509Certificate)
-    bio = BIO(io)
+function Base.write(io::T, x509_cert::X509Certificate) where {T<:IO}
+    bio_stream = BIOStream(io)
 
-    GC.@preserve io begin
-        if ccall(
-            (:PEM_write_bio_X509, libcrypto),
-            Cint,
-            (BIO, X509Certificate),
-            bio,
-            x509_cert) != 1
-            throw(OpenSSLError())
-        end
+    if ccall(
+        (:PEM_write_bio_X509, libcrypto),
+        Cint,
+        (BIOStream{T}, X509Certificate),
+        bio_stream,
+        x509_cert) != 1
+        throw(OpenSSLError())
     end
+
+    free(bio_stream)
 end
 
 function sign_certificate(x509_cert::X509Certificate, evp_pkey::EvpPKey)
@@ -2554,18 +2721,18 @@ function free(x509_req::X509Request)
 end
 
 function Base.write(io::IO, x509_req::X509Request)
-    bio = BIO(io)
+    bio_stream = BIOStream(io)
 
-    GC.@preserve io begin
-        if ccall(
-            (:PEM_write_bio_X509_REQ, libcrypto),
-            Cint,
-            (BIO, X509Request),
-            bio,
-            x509_req) != 1
-            throw(OpenSSLError())
-        end
+    if ccall(
+        (:PEM_write_bio_X509_REQ, libcrypto),
+        Cint,
+        (BIO, X509Request),
+        bio_stream,
+        x509_req) != 1
+        throw(OpenSSLError())
     end
+
+    free(bio_stream)
 end
 
 function add_extensions(x509_req::X509Request, x509_exts::StackOf{X509Extension})
@@ -2944,8 +3111,6 @@ function Base.String(x509_ext::X509Extension)
         return "C_NULL"
     end
 
-    io = IOBuffer()
-
     bio = BIO(BIOMethodMemory())
 
     _ = ccall(
@@ -3109,16 +3274,20 @@ end
 include("ssl.jl")
 
 const OPEN_SSL_INIT = Ref{OpenSSLInit}()
-const BIO_STREAM_CALLBACKS = Ref{BIOStreamCallbacks}()
-const BIO_STREAM_METHOD = Ref{BIOMethod}()
+const BIO_STREAM_CALLBACKS_IO = Ref{BIOStreamCallbacks{IO}}()
+const BIO_STREAM_CALLBACKS_TCPSOCKET = Ref{BIOStreamCallbacks{TCPSocket}}()
+const BIO_STREAM_METHOD_IO = Ref{BIOMethod}()
+const BIO_STREAM_METHOD_TCPSOCKET = Ref{BIOMethod}()
 
 """
     Initialize module.
 """
 function __init__()
     OPEN_SSL_INIT.x = OpenSSLInit()
-    BIO_STREAM_CALLBACKS.x = BIOStreamCallbacks()
-    BIO_STREAM_METHOD.x = BIOMethod("BIO_STREAM_METHOD")
+    BIO_STREAM_CALLBACKS_IO.x = BIOStreamCallbacks{IO}()
+    BIO_STREAM_CALLBACKS_TCPSOCKET.x = BIOStreamCallbacks{TCPSocket}()
+    BIO_STREAM_METHOD_IO.x = BIOMethod("BIO_STREAM_METHOD_IO", BIO_STREAM_CALLBACKS_IO.x)
+    BIO_STREAM_METHOD_TCPSOCKET.x = BIOMethod("BIO_STREAM_METHOD_TCPSOCKET", BIO_STREAM_CALLBACKS_TCPSOCKET.x)
 
     # Set the openssl provider search path
     if version_number() ≥ v"3"
