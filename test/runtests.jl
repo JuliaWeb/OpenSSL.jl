@@ -460,15 +460,9 @@ end
 
 # https://www.openssl.org/docs/man3.0/man7/OSSL_PROVIDER-legacy.html
 @testset "Encrypt" begin
-    if OpenSSL.version_number() ≥ v"3"
-        OpenSSL.load_legacy_provider()
-    end
     evp_ciphers = [
         EvpEncNull(),
-        EvpBlowFishCBC(), # legacy
-        EvpBlowFishECB(), # legacy
         #EvpBlowFishCFB(), // not supported
-        EvpBlowFishOFB(), # legacy
         EvpAES128CBC(),
         EvpAES128ECB(),
         #EvpAES128CFB(), // not supported
@@ -504,14 +498,6 @@ end
 end
 
 @testset "EncryptCustomKey" begin
-    # EvpBlowFishECB is legacy, consider using EvpAES128ECB instead
-    if OpenSSL.version_number() ≥ v"3"
-        OpenSSL.load_legacy_provider()
-    end
-    evp_cipher = EvpBlowFishECB()
-    sym_key = random_bytes(evp_cipher.key_length ÷ 2)
-    init_vector = random_bytes(evp_cipher.init_vector_length ÷ 2)
-
     enc_evp_cipher_ctx = EvpCipherContext()
     encrypt_init(enc_evp_cipher_ctx, evp_cipher, sym_key, init_vector)
 
