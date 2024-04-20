@@ -462,7 +462,10 @@ end
 @testset "Encrypt" begin
     evp_ciphers = [
         EvpEncNull(),
+        EvpBlowFishCBC(), # legacy
+        EvpBlowFishECB(), # legacy
         #EvpBlowFishCFB(), // not supported
+        EvpBlowFishOFB(), # legacy
         EvpAES128CBC(),
         EvpAES128ECB(),
         #EvpAES128CFB(), // not supported
@@ -498,6 +501,10 @@ end
 end
 
 @testset "EncryptCustomKey" begin
+    evp_cipher = EvpAES128ECB()
+    sym_key = random_bytes(evp_cipher.key_length ÷ 2)
+    init_vector = random_bytes(evp_cipher.init_vector_length ÷ 2)
+
     enc_evp_cipher_ctx = EvpCipherContext()
     encrypt_init(enc_evp_cipher_ctx, evp_cipher, sym_key, init_vector)
 
