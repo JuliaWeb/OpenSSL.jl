@@ -462,10 +462,7 @@ end
 @testset "Encrypt" begin
     evp_ciphers = [
         EvpEncNull(),
-        EvpBlowFishCBC(), # legacy
-        EvpBlowFishECB(), # legacy
         #EvpBlowFishCFB(), // not supported
-        EvpBlowFishOFB(), # legacy
         EvpAES128CBC(),
         EvpAES128ECB(),
         #EvpAES128CFB(), // not supported
