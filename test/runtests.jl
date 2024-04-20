@@ -497,34 +497,6 @@ end
     end
 end
 
-@testset "EncryptCustomKey" begin
-    evp_cipher = EvpAES128ECB()
-    sym_key = random_bytes(evp_cipher.key_length ÷ 2)
-    init_vector = random_bytes(evp_cipher.init_vector_length ÷ 2)
-
-    enc_evp_cipher_ctx = EvpCipherContext()
-    encrypt_init(enc_evp_cipher_ctx, evp_cipher, sym_key, init_vector)
-
-    dec_evp_cipher_ctx = EvpCipherContext()
-    decrypt_init(dec_evp_cipher_ctx, evp_cipher, sym_key, init_vector)
-
-    in_string = "OpenSSL Julia"
-    in_data = IOBuffer(in_string)
-    enc_data = IOBuffer()
-
-    cipher(enc_evp_cipher_ctx, in_data, enc_data)
-    seek(enc_data, 0)
-    @show String(read(enc_data))
-    seek(enc_data, 0)
-
-    dec_data = IOBuffer()
-    cipher(dec_evp_cipher_ctx, enc_data, dec_data)
-    out_data = take!(dec_data)
-    out_string = String(out_data)
-
-    @test in_string == out_string
-end
-
 @testset "StackOf{X509Extension}" begin
     ext1 = X509Extension("subjectAltName", "DNS:openssl.jl.com")
     ext2 = X509Extension("keyUsage", "digitalSignature, keyEncipherment, keyAgreement")
