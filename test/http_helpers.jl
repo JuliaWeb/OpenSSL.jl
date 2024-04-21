@@ -13,8 +13,8 @@ function test_server()
     add_entry(x509_name, "ST", "Isles of Redmond")
     add_entry(x509_name, "CN", "www.redmond.com")
 
-    adjust(x509_certificate.time_not_before, Second(0))
-    adjust(x509_certificate.time_not_after, Year(1))
+    Dates.adjust(x509_certificate.time_not_before, Second(0))
+    Dates.adjust(x509_certificate.time_not_after, Year(1))
 
     x509_certificate.subject_name = x509_name
     x509_certificate.issuer_name = x509_name
