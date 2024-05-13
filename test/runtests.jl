@@ -24,12 +24,19 @@ end
 
 # Verifies calling into OpenSSL library.
 @testset "OpenSSL" begin
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_create_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_destroy_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_read_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_write_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_puts_ptr != C_NULL
-    @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_ctrl_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_create_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_destroy_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_read_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_write_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_puts_ptr != C_NULL
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_ctrl_ptr != C_NULL
+
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_create_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_create_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_destroy_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_destroy_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_read_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_read_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_write_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_write_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_puts_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_puts_ptr
+    @test OpenSSL.BIO_STREAM_CALLBACKS_IO.x.on_bio_ctrl_ptr != OpenSSL.BIO_STREAM_CALLBACKS_TCPSOCKET.x.on_bio_ctrl_ptr
 end
 
 @testset "RandomBytes" begin
@@ -199,6 +206,7 @@ end
     sleep(2)
     write(io, readavailable(ssl))
     response = String(take!(io))
+
     @test startswith(response, "HTTP/1.1 200 OK\r\n")
     sleep(2)
     @test isempty(readavailable(ssl))
@@ -285,18 +293,10 @@ end
 
     sign_certificate(x509_certificate, evp_pkey)
 
-    port, server = Sockets.listenany(10000)
-    iob = connect(port)
-    sob = accept(server)
-    local cert_pem
-    try
-        write(iob, x509_certificate)
-        cert_pem = String(readavailable(sob))
-    finally
-        close(iob)
-        close(sob)
-        close(server)
-    end
+    iob = IOBuffer()
+    write(iob, x509_certificate)
+
+    cert_pem = String(take!(iob))
 
     x509_certificate2 = X509Certificate(cert_pem)
 
@@ -537,18 +537,10 @@ end
 @testset "SerializePrivateKey" begin
     evp_pkey = EvpPKey(rsa_generate_key())
 
-    port, server = Sockets.listenany(10000)
-    iob = connect(port)
-    sob = accept(server)
-    local pkey_pem
-    try
-        write(iob, evp_pkey)
-        pkey_pem = String(readavailable(sob))
-    finally
-        close(iob)
-        close(sob)
-        close(server)
-    end
+    iob = IOBuffer()
+    write(iob, evp_pkey)
+
+    pkey_pem = String(take!(iob))
 
     @test startswith(pkey_pem, "-----BEGIN PRIVATE KEY-----")
 
@@ -572,10 +564,9 @@ end
 @testset "SSLServer" begin
     server_task = @async test_server()
     client_task = @async test_client()
-    if isdefined(Base, :errormonitor)
-        errormonitor(server_task)
-        errormonitor(client_task)
-    end
+
+    wait(server_task)
+    wait(client_task)
 end
 
 @testset "VersionNumber" begin
