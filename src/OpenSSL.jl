@@ -539,7 +539,7 @@ function _ossl_modules_path()
             return joinpath(lib_dir, "ossl-modules")
         end
     else
-        return joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules")
+        return "/Users/jacob.quinn/aws-crt/lib/ossl-modules"
     end
 end
 
