@@ -2,7 +2,9 @@ module OpenSSL
 
 using BitFlags
 using Dates
-using OpenSSL_jll
+# using OpenSSL_jll
+const libcrypto = "/Users/jacob.quinn/aws-crt/lib/libcrypto.so"
+const libssl = "/Users/jacob.quinn/aws-crt/lib/libssl.so"
 using Sockets
 using MozillaCACerts_jll
 
