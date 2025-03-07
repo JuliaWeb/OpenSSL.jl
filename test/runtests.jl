@@ -187,7 +187,7 @@ end
 
     x509_server_cert = OpenSSL.get_peer_certificate(ssl)
 
-    @test String(x509_server_cert.issuer_name) == "/C=US/O=Let's Encrypt/CN=R3"
+    @test String(x509_server_cert.issuer_name) == "/C=US/O=Let's Encrypt/CN=R11"
     @test String(x509_server_cert.subject_name) == "/CN=httpbingo.julialang.org"
 
     request_str = "GET /status/200 HTTP/1.1\r\nHost: httpbingo.julialang.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
@@ -562,6 +562,20 @@ end
 
 @testset "DSA" begin
     dsa = dsa_generate_key()
+end
+
+@testset "EC" begin
+    curves = ec_builtin_curves()
+    if length(curves) > 0
+        builtincurve = first(curves)
+        eckey = EvpPKey(ec_generate_key(builtincurve.id))
+        @test eckey.key_type == OpenSSL.EVP_PKEY_EC
+        free(eckey)
+
+        eckey = EvpPKey(ec_generate_key(builtincurve.name))
+        @test eckey.key_type == OpenSSL.EVP_PKEY_EC
+        free(eckey)
+    end
 end
 
 @testset "X509Attribute" begin
