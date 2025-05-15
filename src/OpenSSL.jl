@@ -537,7 +537,7 @@ function _ossl_modules_path()
             return joinpath(lib_dir, "ossl-modules")
         end
     else
-        return joinpath(dirname(OpenSSL_jll.libssl), "ossl-modules")
+        return joinpath(dirname(OpenSSL_jll.libssl_path), "ossl-modules")
     end
 end
 
