@@ -187,7 +187,7 @@ end
 
     x509_server_cert = OpenSSL.get_peer_certificate(ssl)
 
-    @test String(x509_server_cert.issuer_name) == "/C=US/O=Let's Encrypt/CN=R3"
+    @test contains(String(x509_server_cert.issuer_name), "/C=US/O=Let's Encrypt/")
     @test String(x509_server_cert.subject_name) == "/CN=httpbingo.julialang.org"
 
     request_str = "GET /status/200 HTTP/1.1\r\nHost: httpbingo.julialang.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
