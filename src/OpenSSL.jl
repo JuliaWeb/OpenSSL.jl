@@ -2668,6 +2668,22 @@ function set_public_key(x509_req::X509Request, evp_pkey::EvpPKey)
     end
 end
 
+function set_version(x509_req::X509Request, version::Int)
+    if ccall(
+        (:X509_REQ_set_version, libcrypto),
+        Cint,
+        (X509Request, Cint),
+        x509_req,
+        version) != 1
+        throw(OpenSSLError())
+    end
+end
+
+function get_version(x509_req::X509Request)::Int
+    version = ccall((:X509_REQ_get_version, libcrypto), Clong, (X509Request,), x509_req)
+    return Int(version)
+end
+
 function get_extensions(x509_req::X509Request)
     sk = ccall(
         (:X509_REQ_get_extensions, libcrypto),
@@ -2688,6 +2704,8 @@ function Base.getproperty(x509_req::X509Request, name::Symbol)
         return get_public_key(x509_req)
     elseif name === :extensions
         return get_extensions(x509_req)
+    elseif name === :version
+        return get_version(x509_req)
     else
         # fallback to getfield
         return getfield(x509_req, name)
@@ -2699,6 +2717,8 @@ function Base.setproperty!(x509_req::X509Request, name::Symbol, value)
         set_subject_name(x509_req, value)
     elseif name === :public_key
         set_public_key(x509_req, value)
+    elseif name === :version
+        set_version(x509_req, value)
     else
         # fallback to setfield
         setfield!(x509_req, name, value)

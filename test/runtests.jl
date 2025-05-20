@@ -340,6 +340,7 @@ end
     # Create a certificate sign request.
     x509_request = X509Request()
     x509_request.version = 0
+    @test x509_request.version == 0
 
     evp_pkey = EvpPKey(rsa_generate_key())
 
