@@ -34,7 +34,7 @@ jobs:
           - macOS-latest
           - windows-latest
         arch:
-          - x64
+          - 'default'
         include:
           - os: windows-latest
             version: '1'
