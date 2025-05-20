@@ -679,25 +679,23 @@ end
     Close SSL stream.
 """
 function Base.close(ssl::SSLStream, shutdown::Bool=true)
-    close_socket = false
     Base.@lock ssl.lock begin
         ssl.closed && return
         ssl.closed = true
-        close_socket = true
-        # Ignore the disconnect result.
-        shutdown && ssl_disconnect(ssl.ssl)
+        if shutdown
+            try
+                ssl_disconnect(ssl.ssl)
+            catch err
+                @debug "SSL disconnect failed" err
+            end
+        end
         free(ssl.ssl)
     end
-    if close_socket
-        # close underlying io; because closing a TCPSocket may block
-        # we do it outside holding the ssl.lock
-        try
-            Base.close(ssl.io)
-        catch e
-            e isa Base.IOError || rethrow()
-        end
+    @async try
+        Base.close(ssl.io)
+    catch e
+        e isa Base.IOError || rethrow()
     end
-    return
 end
 
 """
