@@ -572,8 +572,9 @@ end
 end
 
 @testset "SSLServer" begin
-    server_task = @async test_server()
-    client_task = @async test_client()
+    server_ready = Threads.Condition()
+    server_task = @async test_server(server_ready)
+    client_task = @async test_client(server_ready)
     if isdefined(Base, :errormonitor)
         errormonitor(server_task)
         errormonitor(client_task)
