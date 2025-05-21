@@ -187,7 +187,7 @@ end
 
     x509_server_cert = OpenSSL.get_peer_certificate(ssl)
 
-    @test contains(String(x509_server_cert.issuer_name), "/C=US/O=Let's Encrypt/")
+    @test String(x509_server_cert.issuer_name) == "/C=US/O=Let's Encrypt/CN=R11"
     @test String(x509_server_cert.subject_name) == "/CN=httpbingo.julialang.org"
 
     request_str = "GET /status/200 HTTP/1.1\r\nHost: httpbingo.julialang.org\r\nUser-Agent: curl\r\nAccept: */*\r\n\r\n"
@@ -339,6 +339,8 @@ end
 
     # Create a certificate sign request.
     x509_request = X509Request()
+    x509_request.version = 0
+    @test x509_request.version == 0
 
     evp_pkey = EvpPKey(rsa_generate_key())
 
@@ -570,8 +572,9 @@ end
 end
 
 @testset "SSLServer" begin
-    server_task = @async test_server()
-    client_task = @async test_client()
+    server_ready = Threads.Condition()
+    server_task = @async test_server(server_ready)
+    client_task = @async test_client(server_ready)
     if isdefined(Base, :errormonitor)
         errormonitor(server_task)
         errormonitor(client_task)
