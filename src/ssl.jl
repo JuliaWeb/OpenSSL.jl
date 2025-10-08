@@ -686,7 +686,7 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
             try
                 ssl_disconnect(ssl.ssl)
             catch err
-                @debug "SSL disconnect failed" err
+                ccall(:jl_safe_printf, Cvoid, (Cstring, Cstring), "SSL disconnect failed %s.", repr(err))
             end
         end
         free(ssl.ssl)
