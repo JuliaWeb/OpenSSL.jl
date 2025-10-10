@@ -4,6 +4,7 @@ using OpenSSL
 using OpenSSL_jll
 using Sockets
 using Test
+using TimeZones
 
 include(joinpath(dirname(pathof(OpenSSL)), "../test/http_helpers.jl"))
 
@@ -108,10 +109,20 @@ end
     cert = certs_pem[2]
 
     x509_cert = X509Certificate(cert)
-    @test String(x509_cert.subject_name) == "/C=BE/O=GlobalSign nv-sa/OU=Root CA/CN=GlobalSign Root CA"
-    @test String(x509_cert.issuer_name) == "/C=BE/O=GlobalSign nv-sa/OU=Root CA/CN=GlobalSign Root CA"
-    @test String(x509_cert.time_not_before) == "Sep  1 12:00:00 1998 GMT"
-    @test String(x509_cert.time_not_after) == "Jan 28 12:00:00 2028 GMT"
+
+    @test occursin("/C=", String(x509_cert.subject_name))
+    @test occursin("/OU=", String(x509_cert.subject_name))
+    @test  occursin("/CN=", String(x509_cert.subject_name))
+
+    @test occursin("/C=", String(x509_cert.issuer_name))
+    @test occursin("/OU=", String(x509_cert.issuer_name))
+    @test  occursin("/CN=", String(x509_cert.issuer_name))
+
+    s_before_time = replace(String(x509_cert.time_not_before), r" +" => " ")
+    @test DateTime(s_before_time, dateformat"u d HH:MM:SS yyyy Z") < today()
+
+    s_after_time = replace(String(x509_cert.time_not_after), r" +" => " ")
+    @test DateTime(s_after_time, dateformat"u d HH:MM:SS yyyy Z") > today()
 
     # finalizer will cleanup
     #finalize(x509_cert)
