@@ -682,16 +682,10 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
     Base.@lock ssl.lock begin
         ssl.closed && return
         ssl.closed = true
-        if shutdown
-            try
-                ssl_disconnect(ssl.ssl)
-            catch err
-                @debug "SSL disconnect failed" err
-            end
-        end
+        shutdown && ssl_disconnect(ssl.ssl)
         free(ssl.ssl)
     end
-    @async try
+    try
         Base.close(ssl.io)
     catch e
         e isa Base.IOError || rethrow()
