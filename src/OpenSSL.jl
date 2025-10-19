@@ -1163,132 +1163,6 @@ function Base.getproperty(evp_cipher_ctx::EvpCipherContext, name::Symbol)
 end
 
 """
-    EVP Message Digest.
-"""
-mutable struct EvpDigest
-    evp_md::Ptr{Cvoid}
-end
-
-EvpMDNull()::EvpDigest = EvpDigest(ccall((:EVP_md_null, libcrypto), Ptr{Cvoid}, ()))
-
-EvpMD2()::EvpDigest = EvpDigest(ccall((:EVP_md2, libcrypto), Ptr{Cvoid}, ()))
-
-EvpMD5()::EvpDigest = EvpDigest(ccall((:EVP_md5, libcrypto), Ptr{Cvoid}, ()))
-
-EvpSHA1()::EvpDigest = EvpDigest(ccall((:EVP_sha1, libcrypto), Ptr{Cvoid}, ()))
-
-EvpSHA224()::EvpDigest = EvpDigest(ccall((:EVP_sha224, libcrypto), Ptr{Cvoid}, ()))
-
-EvpSHA256()::EvpDigest = EvpDigest(ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, ()))
-
-EvpSHA384()::EvpDigest = EvpDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, ()))
-
-EvpSHA512()::EvpDigest = EvpDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
-
-EvpDSS1()::EvpDigest = EvpDigest(ccall((:EVP_dss1, libcrypto), Ptr{Cvoid}, ()))
-
-"""
-    EVP Message Digest Context.
-"""
-mutable struct EvpDigestContext
-    evp_md_ctx::Ptr{Cvoid}
-
-    function EvpDigestContext()
-        evp_digest_ctx = ccall(
-            (:EVP_MD_CTX_new, libcrypto),
-            Ptr{Cvoid},
-            ())
-        if evp_digest_ctx == C_NULL
-            throw(OpenSSLError())
-        end
-
-        evp_digest_ctx = new(evp_digest_ctx)
-        finalizer(free, evp_digest_ctx)
-
-        return evp_digest_ctx
-    end
-end
-
-function free(evp_digest_ctx::EvpDigestContext)
-    ccall(
-        (:EVP_MD_CTX_free, libcrypto),
-        Cvoid,
-        (EvpDigestContext,),
-        evp_digest_ctx)
-
-    evp_digest_ctx.evp_md_ctx = C_NULL
-    return nothing
-end
-
-function digest_init(evp_digest_ctx::EvpDigestContext, evp_digest::EvpDigest)
-    if ccall(
-        (:EVP_DigestInit_ex, libcrypto),
-        Cint,
-        (EvpDigestContext, EvpDigest, Ptr{Cvoid}),
-        evp_digest_ctx,
-        evp_digest,
-        C_NULL) != 1
-        throw(OpenSSLError())
-    end
-end
-
-function digest_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
-    GC.@preserve in_data begin
-        if ccall(
-            (:EVP_DigestUpdate, libcrypto),
-            Cint,
-            (EvpDigestContext, Ptr{UInt8}, Csize_t),
-            evp_digest_ctx,
-            pointer(in_data),
-            length(in_data)) != 1
-            throw(OpenSSLError())
-        end
-    end
-end
-
-function digest_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
-    out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
-    out_length = Ref{UInt32}(0)
-
-    GC.@preserve out_data out_length begin
-        if ccall(
-            (:EVP_DigestFinal_ex, libcrypto),
-            Cint,
-            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
-            evp_digest_ctx,
-            pointer(out_data),
-            pointer_from_objref(out_length)) != 1
-            throw(OpenSSLError())
-        end
-    end
-
-    resize!(out_data, out_length.x)
-
-    return out_data
-end
-
-"""
-    Computes the message digest (hash).
-"""
-function digest(evp_digest::EvpDigest, io::IO)
-    md_ctx = EvpDigestContext()
-
-    digest_init(md_ctx, evp_digest)
-
-    while !eof(io)
-        available_bytes = bytesavailable(io)
-        in_data = read(io, available_bytes)
-        digest_update(md_ctx, in_data)
-    end
-
-    result = digest_final(md_ctx)
-
-    finalize(md_ctx)
-
-    return result
-end
-
-"""
     RSA structure.
     The RSA structure consists of several BIGNUM components.
     It can contain public as well as private RSA keys.
@@ -1691,68 +1565,6 @@ end
 Base.write(bio::BIO, out_data) = return unsafe_write(bio, pointer(out_data), length(out_data))
 
 """
-    ASN1_TIME.
-"""
-mutable struct Asn1Time
-    asn1_time::Ptr{Cvoid}
-
-    Asn1Time(asn1_time::Ptr{Cvoid}) = new(asn1_time)
-
-    Asn1Time() = Asn1Time(0)
-
-    Asn1Time(date_time::DateTime) = Asn1Time(Int64(floor(datetime2unix(date_time))))
-
-    function Asn1Time(unix_time::Int)
-        asn1_time = ccall(
-            (:ASN1_TIME_set, libcrypto),
-            Ptr{Cvoid},
-            (Ptr{Cvoid}, Int64),
-            C_NULL,
-            unix_time)
-        if asn1_time == C_NULL
-            throw(OpenSSLError())
-        end
-
-        asn1_time = new(asn1_time)
-        finalizer(free, asn1_time)
-
-        return asn1_time
-    end
-end
-
-function free(asn1_time::Asn1Time)
-    ccall(
-        (:ASN1_STRING_free, libcrypto),
-        Cvoid,
-        (Asn1Time,),
-        asn1_time)
-
-    asn1_time.asn1_time = C_NULL
-    return nothing
-end
-
-function Dates.adjust(asn1_time::Asn1Time, seconds::Second)
-    adj_asn1_time = ccall(
-        (:X509_gmtime_adj, libcrypto),
-        Ptr{Cvoid},
-        (Asn1Time, Int64),
-        asn1_time,
-        seconds.value)
-    if adj_asn1_time == C_NULL
-        throw(OpenSSLError())
-    end
-
-    if (adj_asn1_time != asn1_time.asn1_time)
-        free(asn1_time)
-        asn1_time.asn1_time = adj_asn1_time
-    end
-end
-
-Dates.adjust(asn1_time::Asn1Time, days::Day) = Dates.adjust(asn1_time, Second(days))
-
-Dates.adjust(asn1_time::Asn1Time, years::Year) = Dates.adjust(asn1_time, Day(365 * years.value))
-
-"""
     EVP_PKEY, EVP Public Key interface.
 """
 mutable struct EvpPKey
@@ -1899,6 +1711,194 @@ function Base.getproperty(evp_pkey::EvpPKey, name::Symbol)
         return getfield(evp_pkey, name)
     end
 end
+
+"""
+    EVP Message Digest.
+"""
+mutable struct EvpDigest
+    evp_md::Ptr{Cvoid}
+end
+
+EvpMDNull()::EvpDigest = EvpDigest(ccall((:EVP_md_null, libcrypto), Ptr{Cvoid}, ()))
+
+EvpMD2()::EvpDigest = EvpDigest(ccall((:EVP_md2, libcrypto), Ptr{Cvoid}, ()))
+
+EvpMD5()::EvpDigest = EvpDigest(ccall((:EVP_md5, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA1()::EvpDigest = EvpDigest(ccall((:EVP_sha1, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA224()::EvpDigest = EvpDigest(ccall((:EVP_sha224, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA256()::EvpDigest = EvpDigest(ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA384()::EvpDigest = EvpDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, ()))
+
+EvpSHA512()::EvpDigest = EvpDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
+
+EvpDSS1()::EvpDigest = EvpDigest(ccall((:EVP_dss1, libcrypto), Ptr{Cvoid}, ()))
+
+"""
+    EVP Message Digest Context.
+"""
+mutable struct EvpDigestContext
+    evp_md_ctx::Ptr{Cvoid}
+
+    function EvpDigestContext()
+        evp_digest_ctx = ccall(
+            (:EVP_MD_CTX_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if evp_digest_ctx == C_NULL
+            throw(OpenSSLError())
+        end
+
+        evp_digest_ctx = new(evp_digest_ctx)
+        finalizer(free, evp_digest_ctx)
+
+        return evp_digest_ctx
+    end
+end
+
+function free(evp_digest_ctx::EvpDigestContext)
+    ccall(
+        (:EVP_MD_CTX_free, libcrypto),
+        Cvoid,
+        (EvpDigestContext,),
+        evp_digest_ctx)
+
+    evp_digest_ctx.evp_md_ctx = C_NULL
+    return nothing
+end
+
+function digest_init(evp_digest_ctx::EvpDigestContext, evp_digest::EvpDigest)
+    if ccall(
+        (:EVP_DigestInit_ex, libcrypto),
+        Cint,
+        (EvpDigestContext, EvpDigest, Ptr{Cvoid}),
+        evp_digest_ctx,
+        evp_digest,
+        C_NULL) != 1
+        throw(OpenSSLError())
+    end
+end
+
+function digest_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
+    GC.@preserve in_data begin
+        if ccall(
+            (:EVP_DigestUpdate, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx,
+            pointer(in_data),
+            length(in_data)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function digest_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
+    out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
+    out_length = Ref{UInt32}(0)
+
+    GC.@preserve out_data out_length begin
+        if ccall(
+            (:EVP_DigestFinal_ex, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            evp_digest_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length)) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    resize!(out_data, out_length.x)
+
+    return out_data
+end
+
+"""
+    Computes the message digest (hash).
+"""
+function digest(evp_digest::EvpDigest, io::IO)
+    md_ctx = EvpDigestContext()
+
+    digest_init(md_ctx, evp_digest)
+
+    while !eof(io)
+        available_bytes = bytesavailable(io)
+        in_data = read(io, available_bytes)
+        digest_update(md_ctx, in_data)
+    end
+
+    result = digest_final(md_ctx)
+
+    finalize(md_ctx)
+
+    return result
+end
+
+"""
+    ASN1_TIME.
+"""
+mutable struct Asn1Time
+    asn1_time::Ptr{Cvoid}
+
+    Asn1Time(asn1_time::Ptr{Cvoid}) = new(asn1_time)
+
+    Asn1Time() = Asn1Time(0)
+
+    Asn1Time(date_time::DateTime) = Asn1Time(Int64(floor(datetime2unix(date_time))))
+
+    function Asn1Time(unix_time::Int)
+        asn1_time = ccall(
+            (:ASN1_TIME_set, libcrypto),
+            Ptr{Cvoid},
+            (Ptr{Cvoid}, Int64),
+            C_NULL,
+            unix_time)
+        if asn1_time == C_NULL
+            throw(OpenSSLError())
+        end
+
+        asn1_time = new(asn1_time)
+        finalizer(free, asn1_time)
+
+        return asn1_time
+    end
+end
+
+function free(asn1_time::Asn1Time)
+    ccall(
+        (:ASN1_STRING_free, libcrypto),
+        Cvoid,
+        (Asn1Time,),
+        asn1_time)
+
+    asn1_time.asn1_time = C_NULL
+    return nothing
+end
+
+function Dates.adjust(asn1_time::Asn1Time, seconds::Second)
+    adj_asn1_time = ccall(
+        (:X509_gmtime_adj, libcrypto),
+        Ptr{Cvoid},
+        (Asn1Time, Int64),
+        asn1_time,
+        seconds.value)
+    if adj_asn1_time == C_NULL
+        throw(OpenSSLError())
+    end
+
+    if (adj_asn1_time != asn1_time.asn1_time)
+        free(asn1_time)
+        asn1_time.asn1_time = adj_asn1_time
+    end
+end
+
+Dates.adjust(asn1_time::Asn1Time, days::Day) = Dates.adjust(asn1_time, Second(days))
+
+Dates.adjust(asn1_time::Asn1Time, years::Year) = Dates.adjust(asn1_time, Day(365 * years.value))
 
 """
     Stack Of.
