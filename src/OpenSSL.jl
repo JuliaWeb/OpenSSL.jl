@@ -28,8 +28,10 @@ export TLSv12ClientMethod, TLSv12ServerMethod,
     X509Request, X509Store, X509Attribute, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
     EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
     EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
-    encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final,
-    digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
+    encrypt_init, cipher, add_extension, add_extensions, decrypt_init,
+    digest_init, digest_update, digest_final, digest,
+    digestsign_init, digestsign_update, digestsign_final, digestsign,
+    random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
     add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
     get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
@@ -1824,6 +1826,84 @@ function digest(evp_digest::EvpDigest, io::IO)
     md_ctx = EvpDigestContext()
 
     digest_init(md_ctx, evp_digest)
+
+    while !eof(io)
+        available_bytes = bytesavailable(io)
+        in_data = read(io, available_bytes)
+        digest_update(md_ctx, in_data)
+    end
+
+    result = digest_final(md_ctx)
+
+    finalize(md_ctx)
+
+    return result
+end
+
+function digestsign_init(
+    evp_digest_ctx::EvpDigestContext,
+    evp_digest::EvpDigest,
+    pkey::EvpPKey,
+)
+    if ccall(
+        (:EVP_DigestSignInit, libcrypto),
+        Cint,
+        (EvpDigestContext, Ptr{Ptr{Cvoid}}, EvpDigest, Ptr{Cvoid}, EvpPKey),
+        evp_digest_ctx,
+        C_NULL,
+        evp_digest,
+        C_NULL,
+        pkey) != 1
+        throw(OpenSSLError())
+    end
+end
+
+function digestsign_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
+    GC.@preserve in_data begin
+        if ccall(
+            (:EVP_DigestSignUpdate, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx,
+            pointer(in_data),
+            length(in_data)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function digestsign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
+    out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
+    out_length = Ref{UInt32}(0)
+
+    GC.@preserve out_data out_length begin
+        if ccall(
+            (:EVP_DigestSignFinal, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            evp_digest_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length)) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    resize!(out_data, out_length.x)
+
+    return out_data
+end
+
+"""
+    Computes the message signature.
+
+    Note that unlike OpenSSL's EVP_DigestSign, this is equivalent to calling all
+    three of digestsign_init, digest_update, and digest_final, not just
+    the latter two.
+"""
+function digestsign(evp_digest::EvpDigest, io::IO, pkey::EvpPKey)
+    md_ctx = EvpDigestContext()
+
+    digestsign_init(md_ctx, evp_digest, pkey)
 
     while !eof(io)
         available_bytes = bytesavailable(io)
