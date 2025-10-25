@@ -1873,22 +1873,34 @@ function digestsign_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UIn
 end
 
 function digestsign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
-    out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
-    out_length = Ref{UInt32}(0)
+    out_length = Ref{Csize_t}(0)
 
-    GC.@preserve out_data out_length begin
+    # first pass to get out_length
+    GC.@preserve out_length begin
         if ccall(
             (:EVP_DigestSignFinal, libcrypto),
             Cint,
-            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            (EvpDigestContext, Ptr{UInt8}, Ptr{Csize_t}),
             evp_digest_ctx,
-            pointer(out_data),
-            pointer_from_objref(out_length)) != 1
+            C_NULL,
+            out_length) != 1
             throw(OpenSSLError())
         end
     end
 
-    resize!(out_data, out_length.x)
+    out_data = Vector{UInt8}(undef, out_length.x)
+    # second pass to actually sign
+    GC.@preserve out_data out_length begin
+        if ccall(
+            (:EVP_DigestSignFinal, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Ptr{Csize_t}),
+            evp_digest_ctx,
+            pointer(out_data),
+            out_length) != 1
+            throw(OpenSSLError())
+        end
+    end
 
     return out_data
 end
