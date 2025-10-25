@@ -23,17 +23,37 @@ Error handling:
     we clear the OpenSSL error queue, and store the error messages in Julia task TLS.
 """
 
-export TLSv12ClientMethod, TLSv12ServerMethod,
-    SSLStream, BigNum, EvpPKey, RSA, DSA, Asn1Time, X509Name, StackOf, X509Certificate,
-    X509Request, X509Store, X509Attribute, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
-    EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
-    EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpSHA256, EvpDSS1,
-    encrypt_init, cipher, add_extension, add_extensions, decrypt_init,
-    digest_init, digest_update, digest_final, digest,
-    digestsign_init, digestsign_update, digestsign_final, digestsign,
-    random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
-    add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
-    get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
+export HTTP2_ALPN, UPDATE_HTTP2_ALPN
+export version
+export random_bytes
+export BigNum
+export free
+export EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB
+export EvpAES128CBC, EvpAES128ECB, EvpAES128CFB, EvpAES128OFB
+export EvpEncNull
+export EvpCipherContext
+export decrypt_init, encrypt_init, cipher
+export RSA, rsa_generate_key
+export DSA, dsa_generate_key
+export EvpPKey
+export EvpMDNull, EvpMD5, EvpSHA1, EvpSHA224, EvpSHA256, EvpSHA384, EvpSHA512
+export EvpDigestContext
+export digest_init, digest_update, digest_final, digest
+export digestsign_init, digestsign_update, digestsign_final, digestsign
+export Asn1Time, adjust
+export StackOf
+export X509Name, add_entry
+export X509Attribute
+export X509Extension
+export X509Certificate, sign_certificate, add_extension
+export X509Request, add_extensions, sign_request
+export X509Store, add_cert
+export P12Object, unpack
+
+# from ssl.jl
+export SSLStream
+export isreadable, iswritable, eof, bytesavailable, unsafe_write
+export connect, get_peer_certificate
 
 const Option{T} = Union{Nothing,T} where {T}
 
@@ -1723,8 +1743,6 @@ end
 
 EvpMDNull()::EvpDigest = EvpDigest(ccall((:EVP_md_null, libcrypto), Ptr{Cvoid}, ()))
 
-EvpMD2()::EvpDigest = EvpDigest(ccall((:EVP_md2, libcrypto), Ptr{Cvoid}, ()))
-
 EvpMD5()::EvpDigest = EvpDigest(ccall((:EVP_md5, libcrypto), Ptr{Cvoid}, ()))
 
 EvpSHA1()::EvpDigest = EvpDigest(ccall((:EVP_sha1, libcrypto), Ptr{Cvoid}, ()))
@@ -1736,8 +1754,6 @@ EvpSHA256()::EvpDigest = EvpDigest(ccall((:EVP_sha256, libcrypto), Ptr{Cvoid}, (
 EvpSHA384()::EvpDigest = EvpDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, ()))
 
 EvpSHA512()::EvpDigest = EvpDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
-
-EvpDSS1()::EvpDigest = EvpDigest(ccall((:EVP_dss1, libcrypto), Ptr{Cvoid}, ()))
 
 """
     EVP Message Digest Context.
