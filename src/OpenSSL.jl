@@ -27,7 +27,7 @@ export TLSv12ClientMethod, TLSv12ServerMethod,
     SSLStream, BigNum, EvpPKey, RSA, DSA, Asn1Time, X509Name, StackOf, X509Certificate,
     X509Request, X509Store, X509Attribute, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
     EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
-    EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
+    EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpSHA256, EvpDSS1,
     encrypt_init, cipher, add_extension, add_extensions, decrypt_init,
     digest_init, digest_update, digest_final, digest,
     digestsign_init, digestsign_update, digestsign_final, digestsign,
@@ -1920,10 +1920,10 @@ function digestsign(evp_digest::EvpDigest, io::IO, pkey::EvpPKey)
     while !eof(io)
         available_bytes = bytesavailable(io)
         in_data = read(io, available_bytes)
-        digest_update(md_ctx, in_data)
+        digestsign_update(md_ctx, in_data)
     end
 
-    result = digest_final(md_ctx)
+    result = digestsign_final(md_ctx)
 
     finalize(md_ctx)
 
