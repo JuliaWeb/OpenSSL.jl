@@ -5,6 +5,7 @@ using Dates
 using OpenSSL_jll
 using Sockets
 using MozillaCACerts_jll
+using NetworkOptions: NetworkOptions
 
 """
     [x] Encryption, decryption
