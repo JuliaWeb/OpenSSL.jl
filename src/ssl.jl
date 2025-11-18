@@ -162,7 +162,9 @@ mutable struct SSLContext
             ssl_context, 33, SSL_MODE_AUTO_RETRY, C_NULL)
         if !isempty(verify_file)
             ret = ca_chain!(ssl_context, verify_file)
-            @assert ret == 1
+            if ret != 1
+                error("Failed to load system CA configuration.")
+            end
         end
 
         return ssl_context
