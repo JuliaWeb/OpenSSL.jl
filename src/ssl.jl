@@ -163,7 +163,7 @@ mutable struct SSLContext
         if !isempty(verify_file)
             ret = ca_chain!(ssl_context, verify_file)
             if ret != 1
-                error("Failed to load system CA configuration at '$(verify_file)'.")
+                error("Failed to validate CA certificates at '$(verify_file)'.")
             end
         end
 
