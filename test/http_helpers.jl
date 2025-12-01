@@ -2,7 +2,7 @@ using Dates
 using OpenSSL
 using Sockets
 
-function test_server()
+function test_server(handshake_ready::Threads.Condition)
     x509_certificate = X509Certificate()
 
     evp_pkey = EvpPKey(rsa_generate_key())
@@ -22,6 +22,7 @@ function test_server()
     sign_certificate(x509_certificate, evp_pkey)
 
     server_socket = listen(5000)
+    @lock handshake_ready notify(handshake_ready)
     try
         accepted_socket = accept(server_socket)
 
@@ -59,7 +60,8 @@ function test_server()
     return nothing
 end
 
-function test_client()
+function test_client(handshake_ready::Threads.Condition)
+    @lock handshake_ready wait(handshake_ready)
     tcp_stream = connect(5000)
 
     ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod())
