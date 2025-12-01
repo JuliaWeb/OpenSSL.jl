@@ -172,13 +172,27 @@ mutable struct SSLContext
 end
 
 function ca_chain!(ssl_context::SSLContext, cacert::String)
-    ccall(
-        (:SSL_CTX_load_verify_locations, libssl),
-        Cint,
-        (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
-        ssl_context,
-        cacert,
-        C_NULL)
+
+    if isfile(cacert)
+        ccall(
+            (:SSL_CTX_load_verify_locations, libssl),
+            Cint,
+            (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
+            ssl_context,
+            cacert,
+            C_NULL)
+    elseif isdir(cacert)
+        ccall(
+            (:SSL_CTX_load_verify_locations, libssl),
+            Cint,
+            (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
+            ssl_context,
+            C_NULL,
+            cacert)
+    else
+        ArgumentError("Invalid CA certificates location: $cacert")
+    end
+
 end
 
 function free(ssl_context::SSLContext)
