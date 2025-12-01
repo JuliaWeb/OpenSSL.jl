@@ -577,6 +577,20 @@ end
     dsa = dsa_generate_key()
 end
 
+@testset "EC" begin
+    curves = ec_builtin_curves()
+    if length(curves) > 0
+        builtincurve = first(curves)
+        eckey = EvpPKey(ec_generate_key(builtincurve.id))
+        @test eckey.key_type == OpenSSL.EVP_PKEY_EC
+        free(eckey)
+
+        eckey = EvpPKey(ec_generate_key(builtincurve.name))
+        @test eckey.key_type == OpenSSL.EVP_PKEY_EC
+        free(eckey)
+    end
+end
+
 @testset "X509Attribute" begin
     attr = X509Attribute()
     free(attr)

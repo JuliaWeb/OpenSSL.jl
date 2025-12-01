@@ -25,12 +25,12 @@ Error handling:
 """
 
 export TLSv12ClientMethod, TLSv12ServerMethod,
-    SSLStream, BigNum, EvpPKey, RSA, DSA, Asn1Time, X509Name, StackOf, X509Certificate,
+    SSLStream, BigNum, EvpPKey, RSA, DSA, EC, ECBuiltinCurve, Asn1Time, X509Name, StackOf, X509Certificate,
     X509Request, X509Store, X509Attribute, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
     EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
     EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
     encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final,
-    digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
+    digest, random_bytes, rsa_generate_key, dsa_generate_key, ec_generate_key, ec_builtin_curves, add_entry, sign_certificate, sign_request, adjust,
     add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
     get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
@@ -1401,6 +1401,124 @@ function dsa_generate_key(; bits::Int32=Int32(1024))::DSA
     return dsa
 end
 
+
+
+"""
+    EC structure.
+"""
+mutable struct EC
+    ec::Ptr{Cvoid}
+
+    function EC()
+        ec = ccall(
+            (:EC_KEY_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if ec == C_NULL
+            throw(OpenSSLError())
+        end
+
+        ec = new(ec)
+        finalizer(free, ec)
+
+        return ec
+    end
+
+    function EC(p::Ptr{Cvoid})
+        ec = new(p)
+        finalizer(free, ec)
+        return ec
+    end
+end
+
+function free(ec::EC)
+    ccall(
+        (:EC_KEY_free, libcrypto),
+        Cvoid,
+        (EC,),
+        ec)
+
+    ec.ec = C_NULL
+    return nothing
+end
+
+"""
+    Generate EC key pair.
+"""
+function ec_generate_key(nid::Int32)::EC
+    ecptr = ccall(
+        (:EC_KEY_new_by_curve_name, libcrypto),
+        Ptr{Cvoid},
+        (Cint,), nid)
+    if ecptr == C_NULL
+        throw(OpenSSLError())
+    end
+    return EC(ecptr)
+end
+
+function ec_generate_key(curvename::AbstractString)::EC
+    found = filter(x -> x.name == curvename, ec_builtin_curves())
+    if length(found) == 0
+        error("No built in curve with name '$curvename' exists")
+    end
+    nid = first(found).id
+    return ec_generate_key(nid)
+end
+
+
+struct ECBuiltinCurve
+    id::Int32
+    name::String
+    comment::String
+end
+
+struct _EC_builtin_curve
+    nid::Cint
+    comment::Ptr{Cchar}
+end
+
+"""
+    Get all the builtin curves. Use id or name when calling ec_generate_key.
+"""
+function ec_builtin_curves()
+    curves = Vector{ECBuiltinCurve}()
+    ncurves = ccall(
+        (:EC_get_builtin_curves, libcrypto),
+        Csize_t,
+        (Ptr{Cvoid}, Csize_t),
+        C_NULL, 0)
+
+    builtin_curve_ids = Vector{_EC_builtin_curve}(undef, ncurves)
+
+    GC.@preserve builtin_curve_ids ncurves begin
+        if ccall(
+            (:EC_get_builtin_curves, libcrypto),
+            Csize_t,
+            (Ptr{Cvoid}, Csize_t),
+            pointer(builtin_curve_ids),
+            ncurves) != ncurves
+            throw(OpenSSLError())
+        end
+        for ecbc in builtin_curve_ids
+            name = ""
+            nid = convert(Int32, ecbc.nid)
+            comment = String(unsafe_string(ecbc.comment))
+            namecptr = ccall(
+                (:OSSL_EC_curve_nid2name, libcrypto),
+                Ptr{Cchar},
+                (Cint,),
+                ecbc.nid) 
+            if namecptr != C_NULL
+                name = String(unsafe_string(namecptr))
+            end
+            push!(curves, ECBuiltinCurve(nid, name, comment))
+        end
+    end
+    return curves
+end
+
+
+
 """
     OpenSSL BIOMethod.
 """
@@ -1807,6 +1925,22 @@ mutable struct EvpPKey
         end
 
         dsa.dsa = C_NULL
+        return evp_pkey
+    end
+
+    function EvpPKey(ec::EC)::EvpPKey
+        evp_pkey = EvpPKey()
+    
+        if ccall(
+            (:EVP_PKEY_assign, libcrypto),
+            Cint, (EvpPKey, Cint, EC),
+            evp_pkey,
+            EVP_PKEY_EC,
+            ec) != 1
+            throw(OpenSSLError())
+        end
+    
+        ec.ec = C_NULL
         return evp_pkey
     end
 
