@@ -661,3 +661,17 @@ end
         @test vn == vn3
     end
 end
+
+@testset "CACertsLoading" begin
+    certs_dir = joinpath(@__DIR__, "certs")
+    certs_path = joinpath(certs_dir, "ca-certificates.crt") 
+    
+    ssl_method = OpenSSL.TLSClientMethod()
+    ctx = OpenSSL.SSLContext(ssl_method, certs_path)
+    @test typeof(ctx) == OpenSSL.SSLContext
+    ctx = OpenSSL.SSLContext(ssl_method, certs_dir)
+    @test typeof(ctx) == OpenSSL.SSLContext
+
+    @test_throws ErrorException OpenSSL.SSLContext(ssl_method, "does_not_exist")
+
+end

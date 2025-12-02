@@ -127,6 +127,13 @@ end
 
 const SSL_MODE_AUTO_RETRY = 0x00000004
 
+# Use NetworkOptions for default CA file so that it can be configured using the standard
+# environment variables (JULIA_SSL_CA_ROOTS_PATH, SSL_CERT_DIR, and SSL_CERT_FILE).
+# TODO: On Windows and macOS `ca_roots` return `nothing` to indicate that system configured
+#       certificates should be preferred but for now we fall back to the certificate from
+#       MozillaCACerts_jll.
+default_cacert() = something(NetworkOptions.ca_roots(), MozillaCACerts_jll.cacert)
+
 """
     This is the global context structure which is created by a server or client once per program life-time
     and which holds mainly default values for the SSL structures which are later created for the connections.
@@ -134,7 +141,7 @@ const SSL_MODE_AUTO_RETRY = 0x00000004
 mutable struct SSLContext
     ssl_ctx::Ptr{Cvoid}
 
-    function SSLContext(ssl_method::SSLMethod, verify_file::String=MozillaCACerts_jll.cacert)
+    function SSLContext(ssl_method::SSLMethod, verify_file::String = default_cacert())
         ssl_ctx = ccall(
             (:SSL_CTX_new, libssl),
             Ptr{Cvoid},
@@ -154,13 +161,10 @@ mutable struct SSLContext
             (SSLContext, Cint, Clong, Ptr{Cvoid}),
             ssl_context, 33, SSL_MODE_AUTO_RETRY, C_NULL)
         if !isempty(verify_file)
-            @assert ccall(
-                (:SSL_CTX_load_verify_locations, libssl),
-                Cint,
-                (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
-                ssl_context,
-                verify_file,
-                C_NULL) == 1
+            ret = ca_chain!(ssl_context, verify_file)
+            if ret != 1
+                error("Failed to validate CA certificates at '$(verify_file)'.")
+            end
         end
 
         return ssl_context
@@ -168,13 +172,27 @@ mutable struct SSLContext
 end
 
 function ca_chain!(ssl_context::SSLContext, cacert::String)
-    ccall(
-        (:SSL_CTX_load_verify_locations, libssl),
-        Cint,
-        (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
-        ssl_context,
-        cacert,
-        C_NULL)
+
+    if isfile(cacert)
+        ccall(
+            (:SSL_CTX_load_verify_locations, libssl),
+            Cint,
+            (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
+            ssl_context,
+            cacert,
+            C_NULL)
+    elseif isdir(cacert)
+        ccall(
+            (:SSL_CTX_load_verify_locations, libssl),
+            Cint,
+            (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
+            ssl_context,
+            C_NULL,
+            cacert)
+    else
+        ArgumentError("Invalid CA certificates location: $cacert")
+    end
+
 end
 
 function free(ssl_context::SSLContext)
