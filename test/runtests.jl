@@ -195,6 +195,7 @@ end
     ssl = SSLStream(ssl_ctx, tcp_stream)
 
     OpenSSL.connect(ssl)
+    @test OpenSSL.ssl_get_verify_result(ssl.ssl) == 0
 
     x509_server_cert = OpenSSL.get_peer_certificate(ssl)
 
@@ -621,8 +622,8 @@ end
 
 @testset "CACertsLoading" begin
     certs_dir = joinpath(@__DIR__, "certs")
-    certs_path = joinpath(certs_dir, "ca-certificates.crt") 
-    
+    certs_path = joinpath(certs_dir, "ca-certificates.crt")
+
     ssl_method = OpenSSL.TLSClientMethod()
     ctx = OpenSSL.SSLContext(ssl_method, certs_path)
     @test typeof(ctx) == OpenSSL.SSLContext
@@ -631,4 +632,32 @@ end
 
     @test_throws ErrorException OpenSSL.SSLContext(ssl_method, "does_not_exist")
 
+end
+
+@testset "SSLVerifyBindings" begin
+    certs_dir = joinpath(@__DIR__, "certs")
+    certs_path = joinpath(certs_dir, "ca-certificates.crt")
+
+    ssl_method = OpenSSL.TLSServerMethod()
+    ctx = OpenSSL.SSLContext(ssl_method)
+
+    mode = OpenSSL.SSL_VERIFY_PEER | OpenSSL.SSL_VERIFY_FAIL_IF_NO_PEER_CERT
+    OpenSSL.ssl_set_verify(ctx, mode)
+
+    current_mode = ccall(
+        (:SSL_CTX_get_verify_mode, libssl),
+        Cint,
+        (OpenSSL.SSLContext,),
+        ctx)
+    @test current_mode == mode
+
+    @test OpenSSL.ssl_load_verify_locations(ctx, certs_path, nothing) == 1
+    @test OpenSSL.ssl_load_verify_locations(ctx, nothing, certs_dir) == 1
+
+    # Test loading client CA list for mTLS.
+    ca_list = OpenSSL.ssl_load_client_ca_file(certs_path)
+    @test ca_list != C_NULL
+    OpenSSL.ssl_set_client_ca_list(ctx, ca_list)
+
+    OpenSSL.free(ctx)
 end
