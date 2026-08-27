@@ -1675,8 +1675,8 @@ end
 """
     BIO write.
 """
-## throw error here
 function Base.unsafe_write(bio::BIO, out_buffer::Ptr{UInt8}, out_length::Int)
+    ## throw error here
     result = ccall(
         (:BIO_write, libcrypto),
         Cint,
