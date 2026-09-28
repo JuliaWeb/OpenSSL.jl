@@ -728,3 +728,67 @@ end
     close(server)
     @test timedwait(() -> istaskdone(writer), 30.0) === :ok
 end
+
+@testset "ConcurrentWriters" begin
+    # Two tasks writing to one stream: each SSL call takes its own ciphertext under
+    # `ssl.lock` and the socket writes go out in that order, so the records arrive in
+    # the order OpenSSL made them (out of order would fail the record MAC on the peer)
+    # and neither writer returns before its own bytes reached the socket.
+    cert = X509Certificate()
+    key = EvpPKey(rsa_generate_key())
+    cert.public_key = key
+    name = X509Name()
+    add_entry(name, "CN", "localhost")
+    cert.subject_name = name
+    cert.issuer_name = name
+    Dates.adjust(cert.time_not_before, Second(0))
+    Dates.adjust(cert.time_not_after, Year(1))
+    sign_certificate(cert, key)
+
+    server_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod(), "")
+    OpenSSL.ssl_use_certificate(server_ctx, cert)
+    OpenSSL.ssl_use_private_key(server_ctx, key)
+
+    nwriters = 4
+    nchunks = 64
+    chunklen = 64 * 1024
+    total = nwriters * nchunks * chunklen
+
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    server_task = @async begin
+        sock = accept(server)
+        ssl = OpenSSL.SSLStream(server_ctx, sock)
+        Sockets.accept(ssl)
+        received = Vector{UInt8}(undef, total)
+        read!(ssl, received)
+        close(ssl)
+        received
+    end
+
+    client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
+        Sockets.connect(ip"127.0.0.1", port))
+    Sockets.connect(client; require_ssl_verification=false)
+
+    writers = map(1:nwriters) do id
+        @async begin
+            chunk = fill(UInt8(id), chunklen)
+            for _ in 1:nchunks
+                write(client, chunk)
+            end
+        end
+    end
+    @test timedwait(() -> all(istaskdone, writers), 60.0) === :ok
+    @test !any(istaskfailed, writers)
+    @test timedwait(() -> istaskdone(server_task), 60.0) === :ok
+    @test !istaskfailed(server_task)
+    if !istaskfailed(server_task)
+        received = fetch(server_task)
+        @test length(received) == total
+        # every writer's bytes all arrived, whatever the interleaving
+        for id in 1:nwriters
+            @test count(==(UInt8(id)), received) == nchunks * chunklen
+        end
+    end
+    close(client)
+    close(server)
+end
