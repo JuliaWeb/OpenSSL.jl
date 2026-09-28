@@ -101,9 +101,14 @@ end
     task's waits for that task's socket write, and every task waits until its own bytes
     have reached the socket, or sees the error when they do not. Nothing to write costs
     nothing, so a reader never waits behind a writer that is blocked on the peer.
+
+`owner`, when given, is the `SSLStream` the chunk belongs to: if it was closed while
+this task waited for its turn, the chunk is not written and an `IOError` is thrown
+instead. Records before it were lost, so sending it would only have the peer reject
+it. The close paths pass no owner: the stream is closed by then by design.
 """
-drain!(data::BIOStreamData, pending::Nothing) = nothing
-function drain!(data::BIOStreamData, pending::PendingWrite)
+drain!(data::BIOStreamData, pending::Nothing, owner=nothing) = nothing
+function drain!(data::BIOStreamData, pending::PendingWrite, owner=nothing)
     Base.@lock data.cond begin
         try
             while data.turn != pending.ticket
@@ -125,6 +130,7 @@ function drain!(data::BIOStreamData, pending::PendingWrite)
         end
     end
     try
+        owner === nothing || isopen(owner) || throw(Base.IOError("ssl is closed", 0))
         chunk = pending.chunk
         GC.@preserve chunk unsafe_write(data.io, pointer(chunk), UInt(length(chunk)))
     finally
@@ -552,7 +558,7 @@ Base.getproperty(ssl::SSLStream, nm::Symbol) = nm === :bio_read_stream ? ssl : g
 
 function drain!(ssl::SSLStream, pending)
     try
-        drain!(getfield(ssl, :data), pending)
+        drain!(getfield(ssl, :data), pending, ssl)
     catch
         # a failed socket write used to surface through the BIO callback as an SSL
         # error, which closed the stream; keep that so `isopen` does not report a
@@ -569,9 +575,11 @@ Base.iswritable(ssl::SSLStream)::Bool = isopen(ssl) && isopen(ssl.io)
 
 # this is a macro, but should be a function, but closures are stupid slow
 # we use this to standardize the error handling for all of the SSL_*_ex functions:
-# make the ccall under `ssl.lock`, check the error queue, take the ciphertext the call
-# produced while still holding the lock, and write it to the socket after releasing it
-macro geterror(ssl, op, expr)
+# make the ccall under `ssl.lock`, check the error queue, and take the ciphertext the
+# call produced while still holding the lock. Evaluates to `(ret, pending, err)`, for
+# `finish_sslcall!` once every lock that must not be held across the socket write is
+# released; `@geterror` is the two together.
+macro sslcall(ssl, op, expr)
     esc(quote
         local _err = nothing
         local _ret = SSL_ERROR_NONE
@@ -608,19 +616,30 @@ macro geterror(ssl, op, expr)
                 take!(getfield($ssl, :data))
             else
                 # close under the lock we already hold; what comes back is the alert
-                # OpenSSL queued for the peer, sent below once the lock is released
+                # OpenSSL queued for the peer, sent by `finish_sslcall!` once the lock
+                # is released
                 closelocked!($ssl, false)
             end
         end
-        if _err !== nothing
-            closesocket!($ssl, _pending)
-            throw(_err)
-        end
-        # the write BIO only buffers, so this is where the socket write happens, and
-        # the caller waits for the peer here rather than under `ssl.lock`
-        drain!($ssl, _pending)
-        _ret
+        (_ret, _pending, _err)
     end)
+end
+
+# the second half of an SSL call: send the alert and throw when it failed, otherwise
+# write what it produced to the socket and hand back its return code. The write BIO
+# only buffers, so this is where the socket write happens, and the caller waits for the
+# peer here rather than under `ssl.lock`.
+function finish_sslcall!(ssl::SSLStream, ret::SSLErrorCode, pending, err)
+    if err !== nothing
+        closesocket!(ssl, pending)
+        throw(err)
+    end
+    drain!(ssl, pending)
+    return ret
+end
+
+macro geterror(ssl, op, expr)
+    esc(:(finish_sslcall!($ssl, (@sslcall $ssl $op $expr)...)))
 end
 
 # the write BIO buffers the whole output of one `SSL_write_ex` before `drain!` moves it
@@ -852,7 +871,7 @@ function Base.eof(ssl::SSLStream)::Bool
             # at this point, we know there are at least unprocessed bytes
             # buffered, so we call SSL_peek to get the next record processed,
             # which still might not result in bytesavailable > 0
-            ret = @geterror ssl :peek ccall(
+            ret, pending, err = @sslcall ssl :peek ccall(
                 (:SSL_peek_ex, libssl),
                 Cint,
                 (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
@@ -861,21 +880,31 @@ function Base.eof(ssl::SSLStream)::Bool
                 1,
                 peekbytes
             )
-            if ret == SSL_ERROR_NONE
-                return false
-            elseif ret == SSL_ERROR_WANT_WRITE
-                flush(ssl.io)
-            elseif ret == SSL_ERROR_WANT_READ
-                # if we get WANT_READ back, that means there were pending bytes
-                # to be processed, but not a full record, so we need to wait
-                # for additional bytes to come in before we can process. If the
-                # socket is at EOF they never will: the peer went away mid-record,
-                # so this is the end of the stream. Looping instead would spin,
-                # `haspending` stays true for the partial record and `eof(ssl.io)`
-                # returns at once, without ever yielding.
-                eof(ssl.io) && return true
+            if pending === nothing && err === nothing
+                if ret == SSL_ERROR_NONE
+                    return false
+                elseif ret == SSL_ERROR_WANT_WRITE
+                    flush(ssl.io)
+                elseif ret == SSL_ERROR_WANT_READ
+                    # if we get WANT_READ back, that means there were pending bytes
+                    # to be processed, but not a full record, so we need to wait
+                    # for additional bytes to come in before we can process. If the
+                    # socket is at EOF they never will: the peer went away mid-record,
+                    # so this is the end of the stream. Looping instead would spin,
+                    # `haspending` stays true for the partial record and `eof(ssl.io)`
+                    # returns at once, without ever yielding.
+                    eof(ssl.io) && return true
+                end
+                continue
             end
+            (ret, pending, err)
         end
+        # processing the record produced something for the peer (a KeyUpdate reply, or
+        # the alert of a record that failed): send it, or fail, without holding
+        # `eoflock`. A writer parked on a peer that is not reading would otherwise hold
+        # every other reader up through this lock. Then go round again: whether the
+        # peek made bytes available is re-checked at the top.
+        finish_sslcall!(ssl, ret, pending, err)
     end
     bytesavailable(ssl) > 0 && return false
     return !isopen(ssl)
@@ -917,12 +946,16 @@ function closesocket!(ssl::SSLStream, pending)
     try
         drain!(getfield(ssl, :data), pending)
     catch err
+        # the peer being gone is expected here; an interrupt or a cancellation of the
+        # task is not ours to swallow
+        err isa Union{Base.IOError, EOFError} || rethrow()
         @debug "SSL alert not sent" err
-    end
-    @async try
-        Base.close(ssl.io)
-    catch e
-        e isa Base.IOError || rethrow()
+    finally
+        @async try
+            Base.close(ssl.io)
+        catch e
+            e isa Base.IOError || rethrow()
+        end
     end
     return
 end
