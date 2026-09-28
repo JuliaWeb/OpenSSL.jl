@@ -815,32 +815,16 @@ end
     OpenSSL.ssl_use_private_key(server_ctx, key)
 
     port, server = Sockets.listenany(ip"127.0.0.1", 20000)
-    start_reading = Channel{Nothing}(1)
-    # where the server is, for the report if it does not finish
-    stage = Ref(:accept)
-    nread = Threads.Atomic{Int}(0)
+    stop = Channel{Nothing}(1)
     server_task = @async begin
         sock = accept(server)
         ssl = OpenSSL.SSLStream(server_ctx, sock)
         Sockets.accept(ssl)
-        # read nothing until told to, so the client's writer parks on the socket
-        stage[] = :waiting
-        take!(start_reading)
-        stage[] = :reading
-        try
-            while !eof(ssl)
-                Threads.atomic_add!(nread, length(readavailable(ssl)))
-            end
-            stage[] = :eof
-        catch ex
-            # the client's close_notify surfaces as an IOError from the peek in `eof`
-            ex isa Base.IOError || rethrow()
-            stage[] = :error
-        end
-        stage[] = :closing
+        # the server reads nothing, so the client's writer parks on the socket, and it
+        # goes away first: a client socket closed with data still queued both ways is
+        # torn down differently from one platform to the next
+        take!(stop)
         close(ssl)
-        stage[] = :done
-        nread[]
     end
 
     client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
@@ -881,24 +865,20 @@ end
     schedule(cancelled_writer, InterruptException(); error=true)
     @test timedwait(() -> istaskdone(cancelled_writer), 5.0) === :ok
     @test istaskfailed(cancelled_writer)
-
     # the cancelled writer's record is lost, so the stream is unusable and closed
     @test !isopen(client)
+
+    # the server goes away, which fails the parked write; the writer queued behind the
+    # cancelled one then fails too, instead of waiting for a turn that never comes
     stop_writing[] = true
-    put!(start_reading, nothing)
+    put!(stop, nothing)
+    @test timedwait(() -> istaskdone(server_task), 30.0) === :ok
     @test timedwait(() -> istaskdone(parked_writer), 30.0) === :ok
-    # the writer queued behind the cancelled one fails instead of waiting for a turn
-    # that never comes
     @test timedwait(() -> istaskdone(third_writer), 30.0) === :ok
     @test istaskdone(third_writer) && fetch(third_writer) isa Base.IOError
     # and neither does close
     closer = @async close(client)
     @test timedwait(() -> istaskdone(closer), 30.0) === :ok
-    server_done = timedwait(() -> istaskdone(server_task), 30.0)
-    if server_done !== :ok
-        @info "CancelledWriter: server did not finish" stage=stage[] nread=nread[] written=written[] client_io_status=client.io.status client_io_open=isopen(client.io) parked_writer=fetch(parked_writer) cancelled_writer=cancelled_writer.result third_writer=fetch(third_writer)
-    end
-    @test server_done === :ok
     close(server)
 end
 
