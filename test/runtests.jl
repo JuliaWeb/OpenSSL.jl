@@ -860,9 +860,9 @@ end
     # both have to be parked on the condition before one is cancelled: delivering an
     # exception to a task that is still running (possible on another thread) is not
     # allowed, and the cancellation has to land in the wait for the turn
-    cond = client.data.cond
-    waiting(task) = Base.@lock cond (task in cond.waitq)
-    @test timedwait(() -> waiting(cancelled_writer) && waiting(third_writer), 5.0) === :ok
+    data = client.data
+    queued() = Base.@lock data.cond data.waiting
+    @test timedwait(() -> queued() == 2, 5.0) === :ok
     @test !istaskdone(cancelled_writer)
     @test !istaskdone(third_writer)
     # the second one gets cancelled while it waits for its turn

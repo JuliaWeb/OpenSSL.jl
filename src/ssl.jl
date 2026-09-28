@@ -63,9 +63,11 @@ mutable struct BIOStreamData
     # tickets whose task was cancelled while waiting for its turn; passed over when
     # the turn reaches them, so no ticket goes unconsumed and parks every later one
     abandoned::Set{Int}
+    # tasks parked in `drain!` waiting for their turn
+    waiting::Int
 end
 
-BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0, Set{Int}())
+BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0, Set{Int}(), 0)
 
 """
     Ciphertext one SSL call produced, and its place in the socket write order.
@@ -112,7 +114,12 @@ function drain!(data::BIOStreamData, pending::PendingWrite, owner=nothing)
     Base.@lock data.cond begin
         try
             while data.turn != pending.ticket
-                wait(data.cond)
+                data.waiting += 1
+                try
+                    wait(data.cond)
+                finally
+                    data.waiting -= 1
+                end
             end
         catch
             # cancelled while waiting (`schedule(task, ex; error=true)`, an interrupt):
@@ -546,7 +553,9 @@ mutable struct SSLStream <: IO
         bio_write::BIO = BIO(data; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
         x = new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), false, data)
-        finalizer(close, x)
+        # no close_notify from the finalizer: sending it is a socket write, which can
+        # wait for the peer, and a finalizer may not switch tasks
+        finalizer(x -> close(x, false), x)
         return x
     end
 end
