@@ -887,3 +887,52 @@ end
     @test timedwait(() -> istaskdone(server_task), 30.0) === :ok
     close(server)
 end
+
+@testset "TruncatedRecordEOF" begin
+    # A peer that goes away in the middle of a record leaves a partial record buffered:
+    # `haspending` stays true, `SSL_peek_ex` keeps asking for more bytes, and the socket
+    # is at EOF. `eof` has to report the end of the stream rather than loop on that.
+    cert = X509Certificate()
+    key = EvpPKey(rsa_generate_key())
+    cert.public_key = key
+    name = X509Name()
+    add_entry(name, "CN", "localhost")
+    cert.subject_name = name
+    cert.issuer_name = name
+    Dates.adjust(cert.time_not_before, Second(0))
+    Dates.adjust(cert.time_not_after, Year(1))
+    sign_certificate(cert, key)
+
+    server_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod(), "")
+    OpenSSL.ssl_use_certificate(server_ctx, cert)
+    OpenSSL.ssl_use_private_key(server_ctx, key)
+
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    handshake_done = Channel{Nothing}(1)
+    server_task = @async begin
+        sock = accept(server)
+        ssl = OpenSSL.SSLStream(server_ctx, sock)
+        Sockets.accept(ssl)
+        put!(handshake_done, nothing)
+        eof(ssl)
+    end
+
+    client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
+        Sockets.connect(ip"127.0.0.1", port))
+    Sockets.connect(client; require_ssl_verification=false)
+    take!(handshake_done)
+    # take whatever the server sent after the handshake (session tickets) off the
+    # socket, so that closing it sends a FIN rather than a RST
+    sleep(0.2)
+    readavailable(client.io)
+    # a record header announcing 100 bytes, followed by only 3 of them, then close
+    write(client.io, UInt8[0x17, 0x03, 0x03, 0x00, 0x64, 0xaa, 0xbb, 0xcc])
+    close(client.io)
+
+    # the spin never yields, so on one thread a hang here would starve this task too;
+    # a task that does not finish is reported by the timeout, a spinning one by CI
+    @test timedwait(() -> istaskdone(server_task), 30.0) === :ok
+    @test istaskdone(server_task) && fetch(server_task) === true
+    close(client)
+    close(server)
+end
