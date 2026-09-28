@@ -814,23 +814,31 @@ end
 
     port, server = Sockets.listenany(ip"127.0.0.1", 20000)
     start_reading = Channel{Nothing}(1)
+    # where the server is, for the report if it does not finish
+    stage = Ref(:accept)
+    nread = Threads.Atomic{Int}(0)
     server_task = @async begin
         sock = accept(server)
         ssl = OpenSSL.SSLStream(server_ctx, sock)
         Sockets.accept(ssl)
         # read nothing until told to, so the client's writer parks on the socket
+        stage[] = :waiting
         take!(start_reading)
-        nread = 0
+        stage[] = :reading
         try
             while !eof(ssl)
-                nread += length(readavailable(ssl))
+                Threads.atomic_add!(nread, length(readavailable(ssl)))
             end
+            stage[] = :eof
         catch ex
             # the client's close_notify surfaces as an IOError from the peek in `eof`
             ex isa Base.IOError || rethrow()
+            stage[] = :error
         end
+        stage[] = :closing
         close(ssl)
-        nread
+        stage[] = :done
+        nread[]
     end
 
     client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
@@ -884,7 +892,11 @@ end
     # and neither does close
     closer = @async close(client)
     @test timedwait(() -> istaskdone(closer), 30.0) === :ok
-    @test timedwait(() -> istaskdone(server_task), 30.0) === :ok
+    server_done = timedwait(() -> istaskdone(server_task), 30.0)
+    if server_done !== :ok
+        @info "CancelledWriter: server did not finish" stage=stage[] nread=nread[] written=written[] client_io_status=client.io.status client_io_open=isopen(client.io) parked_writer=fetch(parked_writer) cancelled_writer=cancelled_writer.result third_writer=fetch(third_writer)
+    end
+    @test server_done === :ok
     close(server)
 end
 
