@@ -792,3 +792,98 @@ end
     close(client)
     close(server)
 end
+
+@testset "CancelledWriter" begin
+    # A writer cancelled while it waits for its turn on the socket must not leave a hole
+    # in the write order that parks every later writer and `close` forever. Its record
+    # never reaches the peer, so the stream is closed and later writes fail right away.
+    cert = X509Certificate()
+    key = EvpPKey(rsa_generate_key())
+    cert.public_key = key
+    name = X509Name()
+    add_entry(name, "CN", "localhost")
+    cert.subject_name = name
+    cert.issuer_name = name
+    Dates.adjust(cert.time_not_before, Second(0))
+    Dates.adjust(cert.time_not_after, Year(1))
+    sign_certificate(cert, key)
+
+    server_ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod(), "")
+    OpenSSL.ssl_use_certificate(server_ctx, cert)
+    OpenSSL.ssl_use_private_key(server_ctx, key)
+
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    start_reading = Channel{Nothing}(1)
+    server_task = @async begin
+        sock = accept(server)
+        ssl = OpenSSL.SSLStream(server_ctx, sock)
+        Sockets.accept(ssl)
+        # read nothing until told to, so the client's writer parks on the socket
+        take!(start_reading)
+        nread = 0
+        try
+            while !eof(ssl)
+                nread += length(readavailable(ssl))
+            end
+        catch ex
+            # the client's close_notify surfaces as an IOError from the peek in `eof`
+            ex isa Base.IOError || rethrow()
+        end
+        close(ssl)
+        nread
+    end
+
+    client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
+        Sockets.connect(ip"127.0.0.1", port))
+    Sockets.connect(client; require_ssl_verification=false)
+
+    # fill the peer's receive window so the first writer parks on the socket write
+    stop_writing = Threads.Atomic{Bool}(false)
+    written = Threads.Atomic{Int}(0)
+    chunk = zeros(UInt8, 1024 * 1024)
+    parked_writer = @async try
+        while !stop_writing[]
+            write(client, chunk)
+            Threads.atomic_add!(written, length(chunk))
+        end
+    catch ex
+        ex
+    end
+    parked = timedwait(60.0; pollint=0.5) do
+        before = written[]
+        sleep(0.5)
+        !istaskdone(parked_writer) && written[] == before
+    end
+    @test parked === :ok
+
+    # a second writer queues behind it, waiting for its turn, and a third behind that
+    cancelled_writer = @async write(client, UInt8[1])
+    third_writer = @async try
+        write(client, UInt8[2])
+    catch ex
+        ex
+    end
+    @test timedwait(() -> istaskstarted(third_writer), 5.0) === :ok
+    yield()
+    @test !istaskdone(cancelled_writer)
+    @test !istaskdone(third_writer)
+    # the second one gets cancelled while it waits for its turn
+    schedule(cancelled_writer, InterruptException(); error=true)
+    @test timedwait(() -> istaskdone(cancelled_writer), 5.0) === :ok
+    @test istaskfailed(cancelled_writer)
+
+    # the cancelled writer's record is lost, so the stream is unusable and closed
+    @test !isopen(client)
+    stop_writing[] = true
+    put!(start_reading, nothing)
+    @test timedwait(() -> istaskdone(parked_writer), 30.0) === :ok
+    # the writer queued behind the cancelled one fails instead of waiting for a turn
+    # that never comes
+    @test timedwait(() -> istaskdone(third_writer), 30.0) === :ok
+    @test istaskdone(third_writer) && fetch(third_writer) isa Base.IOError
+    # and neither does close
+    closer = @async close(client)
+    @test timedwait(() -> istaskdone(closer), 30.0) === :ok
+    @test timedwait(() -> istaskdone(server_task), 30.0) === :ok
+    close(server)
+end

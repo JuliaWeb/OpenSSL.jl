@@ -56,13 +56,16 @@ mutable struct BIOStreamData
     buf::Vector{UInt8}
     # socket writes happen in the order the chunks were taken, so records leave in the
     # order OpenSSL made them: `take!` hands out a ticket and `drain!` waits for its
-    # turn. Guards `nextticket` and `turn`.
+    # turn. Guards `nextticket`, `turn` and `abandoned`.
     cond::Threads.Condition
     nextticket::Int
     turn::Int
+    # tickets whose task was cancelled while waiting for its turn; passed over when
+    # the turn reaches them, so no ticket goes unconsumed and parks every later one
+    abandoned::Set{Int}
 end
 
-BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0)
+BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0, Set{Int}())
 
 """
     Ciphertext one SSL call produced, and its place in the socket write order.
@@ -102,8 +105,23 @@ end
 drain!(data::BIOStreamData, pending::Nothing) = nothing
 function drain!(data::BIOStreamData, pending::PendingWrite)
     Base.@lock data.cond begin
-        while data.turn != pending.ticket
-            wait(data.cond)
+        try
+            while data.turn != pending.ticket
+                wait(data.cond)
+            end
+        catch
+            # cancelled while waiting (`schedule(task, ex; error=true)`, an interrupt):
+            # the ticket still has to be consumed, or the turn never gets past it and
+            # every later writer parks on it. It may already be ours if the notification
+            # and the cancellation raced. The record this chunk holds never reaches the
+            # peer, which makes the connection unusable; `drain!(::SSLStream)` closes it,
+            # so the writers still waiting fail on the socket instead of hanging.
+            if data.turn == pending.ticket
+                passturn!(data)
+            else
+                push!(data.abandoned, pending.ticket)
+            end
+            rethrow()
         end
     end
     try
@@ -111,11 +129,19 @@ function drain!(data::BIOStreamData, pending::PendingWrite)
         GC.@preserve chunk unsafe_write(data.io, pointer(chunk), UInt(length(chunk)))
     finally
         # always pass the turn on, or one failed write would park every later one
-        Base.@lock data.cond begin
-            data.turn += 1
-            notify(data.cond)
-        end
+        Base.@lock data.cond passturn!(data)
     end
+    return nothing
+end
+
+# hands the turn to the next ticket that still has a task waiting for it; under `cond`
+function passturn!(data::BIOStreamData)
+    data.turn += 1
+    while data.turn in data.abandoned
+        delete!(data.abandoned, data.turn)
+        data.turn += 1
+    end
+    notify(data.cond)
     return nothing
 end
 
