@@ -529,10 +529,6 @@ mutable struct SSLStream <: IO
     # call `read` or `write` at the same time as per the thread in
     # https://mailing.openssl.users.narkive.com/HeNGlNAJ/openssl-and-multithreaded-programs
     lock::ReentrantLock
-    readbytes::Base.RefValue{Csize_t}
-    writebytes::Base.RefValue{Csize_t}
-    peekbuf::Base.RefValue{UInt8}
-    peekbytes::Base.RefValue{Csize_t}
     closed::Bool
     # buffers the ciphertext the BIO callbacks produce, see `BIOStreamData`
     data::BIOStreamData
@@ -543,7 +539,7 @@ mutable struct SSLStream <: IO
         bio_read::BIO = BIO(data; finalize=false)
         bio_write::BIO = BIO(data; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
-        x = new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false, data)
+        x = new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), false, data)
         finalizer(close, x)
         return x
     end
@@ -633,6 +629,10 @@ const SSL_WRITE_CHUNK = UInt(1 << 20)
 
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
     nwritten = 0
+    # per call, not per stream: `@geterror` writes to the socket after releasing
+    # `ssl.lock`, and another task's `SSL_write_ex` would overwrite a shared count
+    # before it is read back below
+    writebytes = Ref{Csize_t}(0)
     while nwritten < in_length
         # SSL_write_ex writes all or nothing without SSL_MODE_ENABLE_PARTIAL_WRITE, so a
         # retry after WANT_READ/WANT_WRITE resubmits the same chunk
@@ -644,10 +644,10 @@ function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UIn
             ssl.ssl,
             in_buffer + nwritten,
             chunk,
-            ssl.writebytes
+            writebytes
         )
         if ret == SSL_ERROR_NONE
-            nwritten += ssl.writebytes[]
+            nwritten += writebytes[]
         elseif ret == SSL_ERROR_WANT_WRITE
             flush(ssl.io)
         elseif ret == SSL_ERROR_WANT_READ
@@ -762,7 +762,8 @@ end
 """
 function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
     nread = 0
-    readbytes = ssl.readbytes
+    # per call, see `unsafe_write`
+    readbytes = Ref{Csize_t}(0)
     while nread < nbytes
         ret = @geterror ssl :unsafe_read ccall(
             (:SSL_read_ex, libssl),
@@ -821,6 +822,9 @@ end
 
 function Base.eof(ssl::SSLStream)::Bool
     bytesavailable(ssl) > 0 && return false
+    # per call, see `unsafe_write`
+    peekbuf = Ref{UInt8}(0x00)
+    peekbytes = Ref{Csize_t}(0)
     while isopen(ssl)
         # note that care needs to be taken here to avoid a potential bad
         # race condition; for SSLStream, we have to manage the state of
@@ -853,9 +857,9 @@ function Base.eof(ssl::SSLStream)::Bool
                 Cint,
                 (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
                 ssl.ssl,
-                ssl.peekbuf,
+                peekbuf,
                 1,
-                ssl.peekbytes
+                peekbytes
             )
             if ret == SSL_ERROR_NONE
                 return false

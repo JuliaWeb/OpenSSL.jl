@@ -749,10 +749,12 @@ end
     OpenSSL.ssl_use_certificate(server_ctx, cert)
     OpenSSL.ssl_use_private_key(server_ctx, key)
 
+    # different sizes per writer: the byte count `SSL_write_ex` reports has to be the
+    # one of this task's call, not of whichever task ran last on the stream
     nwriters = 4
     nchunks = 64
-    chunklen = 64 * 1024
-    total = nwriters * nchunks * chunklen
+    chunklen(id) = id * 32 * 1024
+    total = sum(nchunks * chunklen(id) for id in 1:nwriters)
 
     port, server = Sockets.listenany(ip"127.0.0.1", 20000)
     server_task = @async begin
@@ -771,7 +773,7 @@ end
 
     writers = map(1:nwriters) do id
         @async begin
-            chunk = fill(UInt8(id), chunklen)
+            chunk = fill(UInt8(id), chunklen(id))
             for _ in 1:nchunks
                 write(client, chunk)
             end
@@ -786,7 +788,7 @@ end
         @test length(received) == total
         # every writer's bytes all arrived, whatever the interleaving
         for id in 1:nwriters
-            @test count(==(UInt8(id)), received) == nchunks * chunklen
+            @test count(==(UInt8(id)), received) == nchunks * chunklen(id)
         end
     end
     close(client)
