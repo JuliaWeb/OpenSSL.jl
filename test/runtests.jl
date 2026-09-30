@@ -1029,6 +1029,17 @@ end
     server_ctx = selfsigned_server_ctx()
     port, server = Sockets.listenany(ip"127.0.0.1", 20000)
     client, ssl = connected_pair(server_ctx, server)
+    # the client reads first, which takes the server's session tickets off its socket:
+    # closed with them unread, the kernel may reset the connection rather than end it
+    # (Windows does), and the peer lose the close_notify to the reset
+    client_reader = @async try
+        while !eof(client)
+            readavailable(client)
+        end
+    catch
+    end
+    sleep(0.2)
+    @test timedwait(() -> bytesavailable(client.io) == 0, 10.0) === :ok
     close(client)
     err = boundedread(ssl, client) do
         try
@@ -1243,6 +1254,10 @@ end
         if length(k) == 1
             @test timedwait(() -> !held(only(k)), 30.0) === :ok
         end
+        # the client's close got through, which the chunk let go says; the reader is
+        # ended from this side, the peer's end not reaching it on every platform (macOS
+        # may deliver neither a FIN nor a reset here)
+        close(ssl.io)
         @test timedwait(() -> istaskdone(reader), 30.0) === :ok
     end
     finally
