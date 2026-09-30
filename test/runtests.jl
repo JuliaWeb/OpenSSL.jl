@@ -106,9 +106,9 @@ end
     start_line = "==========\n"
     certs_pem = split(file_content, start_line; keepempty=false)
 
-    cert = certs_pem[2]
-
-    x509_cert = X509Certificate(cert)
+    # Mozilla's root list changes order over time, so use the first root whose subject has an OU
+    pems = filter(p -> occursin("-----BEGIN CERTIFICATE-----", p), certs_pem)
+    x509_cert = first(c for c in Iterators.map(X509Certificate, pems) if occursin("/OU=", String(c.subject_name)))
 
     @test occursin("/C=", String(x509_cert.subject_name))
     @test occursin("/OU=", String(x509_cert.subject_name))
