@@ -1317,6 +1317,28 @@ end
     close(server)
 end
 
+@testset "SpareBuffer" begin
+    # a chunk that reached the socket becomes the write BIO's next buffer; the peer
+    # still reads every write whole and in order, across sizes around a record's and a
+    # write of many records
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    payloads = [rand(UInt8, n) for n in (1, 100, 16383, 16384, 16385, 50_000, 2^20 + 7, 3)]
+    expected = reduce(vcat, payloads)
+    reader = @async read!(ssl, Vector{UInt8}(undef, length(expected)))
+    for payload in payloads
+        write(client, payload)
+    end
+    @test awaitread(reader, ssl, client) == expected
+    # the last write's chunk is kept, emptied, for the next call
+    spare = client.data.spare
+    @test spare isa Vector{UInt8} && isempty(spare)
+    close(client)
+    close(ssl)
+    close(server)
+end
+
 @testset "Ticker" begin
     # a one-shot timer calls back once; closed before it goes off, not at all; and
     # neither logs an error (reading the timer on its end once did, on Julia 1.7)

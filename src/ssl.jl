@@ -112,9 +112,13 @@ mutable struct BIOStreamData
     # the socket handle was closed outright (see `cut!`): no ticket is written any more,
     # and whatever waits for one stops waiting. Under `cond`
     cut::Bool
+    # a chunk that reached the socket, emptied, for `take!` to hand the write BIO as its
+    # next buffer instead of growing a new one record by record. Only a sent chunk: libuv
+    # is done with it then, and nothing else holds it. Under `cond`
+    spare::Union{Nothing, Vector{UInt8}}
 end
 
-BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0, Set{Int}(), 0, typemax(Int), false, false, false)
+BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0, Set{Int}(), 0, typemax(Int), false, false, false, nothing)
 
 """
     take!(data::BIOStreamData) -> Union{PendingWrite, Nothing}
@@ -131,12 +135,38 @@ function Base.take!(data::BIOStreamData)
     # between: no lock either, `ssl.lock` serialising the tickets (see `nextticket`).
     # An interrupt at the allocation leaves the records where they are, for `@sslcall`
     # to give up together with the stream
-    fresh = UInt8[]
+    fresh = takespare!(data)
     ticket = data.nextticket
     data.nextticket = ticket + 1
     chunk = data.buf
     data.buf = fresh
     return PendingWrite(chunk, ticket)
+end
+
+# the spare chunk (see `spare`), or a new buffer when there is none or `cond` is held:
+# `take!` runs under `ssl.lock` and must not wait for a writer
+function takespare!(data::BIOStreamData)
+    spare = nothing
+    if trylock(data.cond)
+        try
+            spare = data.spare
+            data.spare = nothing
+        finally
+            unlock(data.cond)
+        end
+    end
+    return spare === nothing ? UInt8[] : spare
+end
+
+# keeps a chunk that reached the socket as the spare (see `spare`), unless there is one
+# already or it is larger than one record of a write (a handshake flight, say), which
+# would hold that memory for as long as the stream lives; under `cond`
+function keepspare!(data::BIOStreamData, chunk::Vector{UInt8})
+    if data.spare === nothing && length(chunk) <= SPARE_MAX
+        empty!(chunk)
+        data.spare = chunk
+    end
+    return nothing
 end
 
 """
@@ -195,7 +225,7 @@ function drain!(data::BIOStreamData, pending::PendingWrite)
         # bound anew for the closures: captured as they are, having been assigned in the
         # `try`, they would be boxed on every write
         let sent = sent, ticket = pending.ticket, keep = finished ? nothing : pending.chunk,
-                failure = failure
+                failure = failure, chunk = pending.chunk
             # The write failed, or the task was cancelled inside it. The record is lost
             # either way, and with it the stream. A cancelled write is moreover still
             # queued in libuv, with a pointer into the chunk that nothing keeps alive any
@@ -217,7 +247,7 @@ function drain!(data::BIOStreamData, pending::PendingWrite)
                 try
                     sent || cut!(data, keep, failure)
                 finally
-                    passon!(data, ticket, sent)
+                    passon!(data, ticket, sent, chunk)
                 end
             end
         end
@@ -259,9 +289,12 @@ function cut!(data::BIOStreamData, keep=nothing, cause=nothing)
 end
 
 # passes the turn on after a drain; a chunk not sent is given up as `abandon!` does
-function passon!(data::BIOStreamData, ticket::Int, sent::Bool)
+function passon!(data::BIOStreamData, ticket::Int, sent::Bool, chunk::Vector{UInt8})
     sent || return abandon!(data, ticket)
-    surely(() -> passturn!(data), data.cond)
+    surely(data.cond) do
+        passturn!(data)
+        keepspare!(data, chunk)
+    end
     return nothing
 end
 
@@ -1174,8 +1207,14 @@ function socketeof(ssl::SSLStream)
 end
 
 # the write BIO buffers the whole output of one `SSL_write_ex` before `drain!` moves it
-# to the socket, so cap how much plaintext goes into a single call to bound that buffer
-const SSL_WRITE_CHUNK = UInt(1 << 20)
+# to the socket, so cap how much plaintext goes into a single call to bound that buffer.
+# One TLS record's worth: the chunk is then one record, which fits the spare buffer (see
+# `keepspare!`), so a long write reuses one buffer instead of growing a new one to the
+# size of the call
+const SSL_WRITE_CHUNK = UInt(16 * 1024)
+# the largest chunk kept as the spare: a whole `SSL_WRITE_CHUNK` record, with room for
+# its header, padding and tag, and for a KeyUpdate or an alert riding along
+const SPARE_MAX = Int(SSL_WRITE_CHUNK) + 1024
 
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
     # nothing to write: nothing to refuse either, whatever state the stream is in
