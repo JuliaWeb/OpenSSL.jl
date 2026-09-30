@@ -1401,6 +1401,148 @@ function dsa_generate_key(; bits::Int32=Int32(1024))::DSA
     return dsa
 end
 
+
+
+"""
+    EC structure.
+"""
+mutable struct EC
+    ec::Ptr{Cvoid}
+
+    function EC()
+        ec = ccall(
+            (:EC_KEY_new, libcrypto),
+            Ptr{Cvoid},
+            ())
+        if ec == C_NULL
+            throw(OpenSSLError())
+        end
+
+        ec = new(ec)
+        finalizer(free, ec)
+
+        return ec
+    end
+
+    function EC(p::Ptr{Cvoid})
+        ec = new(p)
+        finalizer(free, ec)
+        return ec
+    end
+end
+
+function free(ec::EC)
+    ccall(
+        (:EC_KEY_free, libcrypto),
+        Cvoid,
+        (EC,),
+        ec)
+
+    ec.ec = C_NULL
+    return nothing
+end
+
+"""
+    ec_generate_key(nid)
+    
+Generate EC key pair from a curve identifier. See ec_builtin_curves().
+
+"""
+function ec_generate_key(nid::Int32)::EC
+    ecptr = ccall(
+        (:EC_KEY_new_by_curve_name, libcrypto),
+        Ptr{Cvoid},
+        (Cint,), nid)
+    if ecptr == C_NULL
+        throw(OpenSSLError())
+    end
+    ec = EC(ecptr)
+    if ccall((:EC_KEY_generate_key, libcrypto), Cint, (EC,), ec) != 1
+        throw(OpenSSLError())
+    end
+    return ec
+end
+
+"""
+    ec_generate_key(curvename)
+
+Generate EC key pair from a curve name. See ec_builtin_curves(). Note! the names are
+only loaded in OpenSSL v3, in earlier version the names are the empty string. Use instead
+ec_generate_key(nid) where nid is the numeric curve identifier.
+
+!!! compat "OpenSSL v3" `ec_generate_key(curvename)` is only available with version 3 of the OpenSSL_jll
+"""
+function ec_generate_key(curvename::AbstractString)::EC
+    found = filter(x -> x.name == curvename, ec_builtin_curves())
+    if length(found) == 0
+        throw(ArgumentError("No built in curve with name '$curvename' exists"))
+    end
+    nid = first(found).id
+    return ec_generate_key(nid)
+end
+
+
+struct ECBuiltinCurve
+    id::Int32
+    name::String
+    comment::String
+end
+
+struct _EC_builtin_curve
+    nid::Cint
+    comment::Ptr{Cchar}
+end
+
+"""
+    ec_builtin_curves()
+
+Get all the builtin curves. Use id or name when calling ec_generate_key.
+Note! Curve names are only loaded in OpenSSL v3 and not available in earlier versions.
+    
+"""
+function ec_builtin_curves()
+    version = OpenSSL.version_number()
+
+    curves = Vector{ECBuiltinCurve}()
+    ncurves = ccall(
+        (:EC_get_builtin_curves, libcrypto),
+        Csize_t,
+        (Ptr{Cvoid}, Csize_t),
+        C_NULL, 0)
+
+    builtin_curve_ids = Vector{_EC_builtin_curve}(undef, ncurves)
+
+    GC.@preserve builtin_curve_ids ncurves begin
+        if ccall(
+            (:EC_get_builtin_curves, libcrypto),
+            Csize_t,
+            (Ptr{Cvoid}, Csize_t),
+            pointer(builtin_curve_ids),
+            ncurves) != ncurves
+            throw(OpenSSLError())
+        end
+        for ecbc in builtin_curve_ids
+            name = ""
+            nid = convert(Int32, ecbc.nid)
+            comment = String(unsafe_string(ecbc.comment))
+            if version >= v"3.0"
+                namecptr = ccall(
+                    (:OSSL_EC_curve_nid2name, libcrypto),
+                    Ptr{Cchar},
+                    (Cint,),
+                    ecbc.nid) 
+                if namecptr != C_NULL
+                    name = String(unsafe_string(namecptr))
+                end
+            end
+            push!(curves, ECBuiltinCurve(nid, name, comment))
+        end
+    end
+    return curves
+end
+
+
+
 """
     OpenSSL BIOMethod.
 """
@@ -1807,6 +1949,22 @@ mutable struct EvpPKey
         end
 
         dsa.dsa = C_NULL
+        return evp_pkey
+    end
+
+    function EvpPKey(ec::EC)::EvpPKey
+        evp_pkey = EvpPKey()
+    
+        if ccall(
+            (:EVP_PKEY_assign, libcrypto),
+            Cint, (EvpPKey, Cint, EC),
+            evp_pkey,
+            EVP_PKEY_EC,
+            ec) != 1
+            throw(OpenSSLError())
+        end
+    
+        ec.ec = C_NULL
         return evp_pkey
     end
 
