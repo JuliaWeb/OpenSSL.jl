@@ -1070,6 +1070,15 @@ end
     server_ctx = selfsigned_server_ctx()
     port, server = Sockets.listenany(ip"127.0.0.1", 20000)
     client, ssl = connected_pair(server_ctx, server)
+    # the client reads too, which takes the server's session tickets off its socket:
+    # closed with them unread, the kernel resets the connection rather than ending it,
+    # and the peer loses what it had not read yet of the writes, and the close_notify
+    client_reader = @async try
+        while !eof(client)
+            readavailable(client)
+        end
+    catch
+    end
 
     stop_writing = Threads.Atomic{Bool}(false)
     parked_writer, written = park_writer(client, stop_writing)
@@ -1114,6 +1123,8 @@ end
         @test occursin("unexpected EOF", sprint(showerror, err))
     end
     close(ssl)
+    # ended by the client's own close
+    @test timedwait(() -> istaskdone(client_reader), 30.0) === :ok
     close(server)
 end
 
