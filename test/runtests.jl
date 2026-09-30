@@ -2082,6 +2082,9 @@ saw(logger::ThrowingLogger, what) = Base.@lock logger.lock any(m -> occursin(wha
         catch
         end
         @test timedwait(() -> !isopen(client.io), 30.0) === :ok
+        # the reader ended from this side, the peer's end not reaching it on every
+        # platform (macOS may deliver neither a FIN nor a reset here)
+        close(ssl.io)
         @test timedwait(() -> istaskdone(reader), 30.0) === :ok
     end
     finally
