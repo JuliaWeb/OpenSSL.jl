@@ -765,11 +765,14 @@ function awaitpeer(check, reader, ssl, client)
 end
 
 # writes until the peer's receive window is full and the writer parks on the socket;
-# returns the task and the count of completed writes. Each write is more than what goes
-# to OpenSSL in one call, so that the parked one has a chunk still to go
+# returns the task and the count of completed writes. Each write is many times what goes
+# to OpenSSL in one call, so that the parked one has chunks still to go, and more than
+# the kernel's send and receive buffers grow to (Windows and macOS keep growing them for
+# a peer that does not read): a parked write that the buffers could still take would
+# complete of itself, and the tests need it to stay parked until they end it
 function park_writer(client, stop_writing)
     written = Threads.Atomic{Int}(0)
-    chunk = zeros(UInt8, OpenSSL.SSL_WRITE_CHUNK + OpenSSL.SSL_WRITE_CHUNK ÷ 2)
+    chunk = zeros(UInt8, max(32 * 2^20, 3 * OpenSSL.SSL_WRITE_CHUNK))
     writer = @async try
         while !stop_writing[]
             write(client, chunk)
