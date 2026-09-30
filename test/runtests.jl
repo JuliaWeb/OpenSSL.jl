@@ -580,27 +580,39 @@ end
 @testset "EC" begin
     version = OpenSSL.version_number()
 
-    eckey = EvpPKey(EC())
+    eckey = EvpPKey(OpenSSL.EC())
     @test eckey.key_type == OpenSSL.EVP_PKEY_EC
     free(eckey)
 
-    @test_throws OpenSSL.OpenSSLError ec_generate_key(Int32(-1))
+    @test_throws OpenSSL.OpenSSLError OpenSSL.ec_generate_key(Int32(-1))
 
-    curves = ec_builtin_curves()
-    if length(curves) > 0
-        builtincurve = first(curves)
-        eckey = EvpPKey(ec_generate_key(builtincurve.id))
+    curves = OpenSSL.ec_builtin_curves()
+    @test !isempty(curves)
+    ec = OpenSSL.ec_generate_key(first(curves).id)
+    @test ccall((:EC_KEY_check_key, OpenSSL.libcrypto), Cint, (OpenSSL.EC,), ec) == 1
+    eckey = EvpPKey(ec)
+    @test eckey.key_type == OpenSSL.EVP_PKEY_EC
+
+    # a generated key can sign a certificate
+    cert = X509Certificate()
+    cert.public_key = eckey
+    name = X509Name()
+    add_entry(name, "CN", "ec.example")
+    cert.subject_name = name
+    cert.issuer_name = name
+    Dates.adjust(cert.time_not_before, Second(0))
+    Dates.adjust(cert.time_not_after, Year(1))
+    sign_certificate(cert, eckey)
+    @test occursin("/CN=ec.example", String(cert.subject_name))
+    free(eckey)
+
+    if version >= v"3.0"
+        # Curve from name is only available in OpenSSL 3+
+        @test_throws ArgumentError OpenSSL.ec_generate_key("XXXX Non existing curve name XXXX")
+
+        eckey = EvpPKey(OpenSSL.ec_generate_key("prime256v1"))
         @test eckey.key_type == OpenSSL.EVP_PKEY_EC
         free(eckey)
-
-        if version >= v"3.0"
-            # Curve from name is only available in OpenSSL 3+
-            @test_throws ArgumentError ec_generate_key("XXXX Non existing curve name XXXX")
-
-            eckey = EvpPKey(ec_generate_key(builtincurve.name))
-            @test eckey.key_type == OpenSSL.EVP_PKEY_EC
-            free(eckey)
-        end
     end
 end
 

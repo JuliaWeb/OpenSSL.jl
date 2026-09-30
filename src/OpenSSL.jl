@@ -25,12 +25,12 @@ Error handling:
 """
 
 export TLSv12ClientMethod, TLSv12ServerMethod,
-    SSLStream, BigNum, EvpPKey, RSA, DSA, EC, ECBuiltinCurve, Asn1Time, X509Name, StackOf, X509Certificate,
+    SSLStream, BigNum, EvpPKey, RSA, DSA, Asn1Time, X509Name, StackOf, X509Certificate,
     X509Request, X509Store, X509Attribute, X509Extension, P12Object, EvpDigestContext, EvpCipherContext,
     EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
     EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
     encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final,
-    digest, random_bytes, rsa_generate_key, dsa_generate_key, ec_generate_key, ec_builtin_curves, add_entry, sign_certificate, sign_request, adjust,
+    digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
     add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
     get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
@@ -1456,7 +1456,11 @@ function ec_generate_key(nid::Int32)::EC
     if ecptr == C_NULL
         throw(OpenSSLError())
     end
-    return EC(ecptr)
+    ec = EC(ecptr)
+    if ccall((:EC_KEY_generate_key, libcrypto), Cint, (EC,), ec) != 1
+        throw(OpenSSLError())
+    end
+    return ec
 end
 
 """
