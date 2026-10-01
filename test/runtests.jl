@@ -272,6 +272,9 @@ end
 @testset "Hash" begin
     res = digest(EvpMD5(), IOBuffer("The quick brown fox jumps over the lazy dog"))
     @test res == UInt8[0x9e, 0x10, 0x7d, 0x9d, 0x37, 0x2b, 0xb6, 0x82, 0x6b, 0xd8, 0x1d, 0x35, 0x42, 0xa4, 0x19, 0xd6]
+    if !(v"3.0.0" <= OpenSSL.version_number() <= v"3.0.6")
+        @test bytes2hex(digest(OpenSSL.EvpRIPEMD160(), IOBuffer("abc"))) == "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc"
+    end
 end
 
 @testset "SelfSignedCertificate" begin
