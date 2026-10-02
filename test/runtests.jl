@@ -1219,6 +1219,17 @@ end
 end
 
 @testset "CancelledInFlightWriter" begin
+    # Not on Windows: these cancel a writer inside the socket write, and Base's write
+    # completion callback (`uv_writecb_task`) schedules the waiting task unconditionally
+    # while the request still names it, which it does until the task resumes. A write
+    # that completes just as its task is cancelled therefore throws "schedule: Task not
+    # runnable" out of the libuv callback, into whatever task runs the event loop, and
+    # can wedge the loop. Windows grows the socket buffers for a peer that does not read,
+    # so a parked write completes on its own there and hits that window often; nothing
+    # this package can do about it
+if Sys.iswindows()
+    @test_skip !Sys.iswindows()
+else
     # A writer cancelled inside the socket write itself, not while waiting for its turn:
     # libuv still holds the write, and a pointer into the chunk, so the socket has to be
     # closed outright, at once; a normal close would wait behind that very write.
@@ -1300,6 +1311,7 @@ end
     close(client)
     close(ssl)
     close(server)
+end
 end
 
 @testset "WriteCount" begin
@@ -2288,6 +2300,10 @@ end
 saw(logger::ThrowingLogger, what) = Base.@lock logger.lock any(m -> occursin(what, m), logger.seen)
 
 @testset "ThrowingLogger" begin
+    # Not on Windows: see CancelledInFlightWriter
+if Sys.iswindows()
+    @test_skip !Sys.iswindows()
+else
     # what the library logs on its cleanup paths cannot stop them: a cancelled in-flight
     # write through the fallback close, which logs before it schedules the close, with
     # the writer (and the tasks it starts) logging to a logger that throws
@@ -2343,6 +2359,7 @@ saw(logger::ThrowingLogger, what) = Base.@lock logger.lock any(m -> occursin(wha
     @test !isopen(client)
     close(ssl)
     close(server)
+end
 end
 
 @testset "LostRecordNoCloseNotify" begin
