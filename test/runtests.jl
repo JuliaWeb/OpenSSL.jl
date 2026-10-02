@@ -1446,6 +1446,8 @@ end
     # the completed writes and the parked one, all zeros, and the marker
     nzeros = written[] + PARK_CHUNK
     marker = fill(UInt8(7), 100)
+    # the turn is on the parked record for as long as it is pending
+    turn0 = Base.@lock client.data.cond client.data.turn
     raw = @async Base.@lock client.lock begin
         n = Ref{Csize_t}(0)
         r = GC.@preserve marker ccall(
@@ -1456,7 +1458,14 @@ end
         (r, Int(n[]))
     end
     sleep(0.5)
-    @test !istaskdone(raw)
+    # the raw write waits while the parked record is pending. Windows grows the socket
+    # buffers meanwhile and may let that record through, after which the raw write is
+    # free to go: the turn tells which. Read in this order: a raw write that is done
+    # had the turn move first, so a done write with the turn still on the record would
+    # be the fault, and nothing else is
+    rawdone = istaskdone(raw)
+    stillparked = Base.@lock client.data.cond client.data.turn == turn0
+    @test !(rawdone && stillparked)
     reader = @async read!(ssl, Vector{UInt8}(undef, nzeros + length(marker)))
     @test timedwait(() -> istaskdone(reader), 60.0) === :ok
     if istaskdone(reader)
