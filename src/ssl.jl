@@ -69,6 +69,14 @@ not the caller's: a read's reply goes out from a task of its own (see
 `abortlocked!`), and the close_notify of a dropped stream whose socket outlived it goes
 out from the finalizer's task (see `finalize!`).
 
+A call made on `ssl.ssl` from outside the package (a caller's own `SSL_accept` loop,
+`ssl_accept`) is not one of those: the callback tells by `incall`, and writes what such
+a call produces to the socket itself, behind the records the package's own calls have
+tickets for, under whatever locks the caller holds, as every write was before 1.6.2
+(see `rawwrite`): one parked on a peer that does not read blocks there, unbounded by
+the package, as every write did then. Such a call has to hold `ssl.lock`, as it always
+had to.
+
 Every SSL call runs under `ssl.lock` and takes its own output before releasing it, so
 `buf` is empty whenever a call starts (a close cut short between producing its
 close_notify and taking it leaves it there, for the abort that follows to empty) and
@@ -116,9 +124,15 @@ mutable struct BIOStreamData
     # next buffer instead of growing a new one record by record. Only a sent chunk: libuv
     # is done with it then, and nothing else holds it. Under `cond`
     spare::Union{Nothing, Vector{UInt8}}
+    # an SSL call of the package's own is in progress, which takes what the write BIO is
+    # given with `take!`: set around each, under `ssl.lock` (see `@sslcall` and
+    # `closerest!`). Outside one, the callback serves a call made on `ssl.ssl` from
+    # outside the package, which nothing of the package's would send for, and writes to
+    # the socket itself, as it did before 1.6.2 (see `on_bio_stream_write`)
+    incall::Bool
 end
 
-BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0, Set{Int}(), 0, typemax(Int), false, false, false, nothing)
+BIOStreamData(io::TCPSocket) = BIOStreamData(io, UInt8[], Threads.Condition(), 0, 0, Set{Int}(), 0, typemax(Int), false, false, false, nothing, false)
 
 """
     take!(data::BIOStreamData) -> Union{PendingWrite, Nothing}
@@ -313,6 +327,8 @@ end
 function abandon!(data::BIOStreamData, ticket::Int)
     surely(data.cond) do
         lose!(data, ticket)
+        # given up once already, and passed over since: nothing left to consume
+        ticket < data.turn && return
         if data.turn == ticket
             passturn!(data)
         else
@@ -337,6 +353,47 @@ end
 # marked closed, `nextticket` being otherwise `take!`'s, under `ssl.lock`
 drained(data::BIOStreamData) = data.turn == data.nextticket
 
+# writes a record made by a call from outside the package (see `incall`) to the socket,
+# from the write BIO callback, under whatever locks the caller holds, as before 1.6.2.
+# Once every record the package's own calls ticketed is through, so that the records
+# keep the order OpenSSL made them in. Blocks while the peer's window is full, and
+# nothing of the package's can bound that, every close and watch needing `ssl.lock`
+# first: the caller bounds it as it did then, by closing the socket. Returns what the
+# BIO callback does: the count, or 0 for a failure, which fails the SSL call. A failure
+# leaves the stream unusable (OpenSSL takes a BIO failure as fatal), and a write that
+# did not complete may be queued in libuv still, with a pointer into OpenSSL's own
+# buffer, which `SSL_free` would free under it: so the socket is cut, which cancels the
+# write, and the loss recorded, and nothing more goes out on this stream. An interrupt,
+# which cannot be thrown through OpenSSL's frames, is said to be lost
+function rawwrite(data::BIOStreamData, in::Ptr{Cchar}, inlen::Cint)::Cint
+    written = 0
+    sent = false
+    try
+        if awaitdrained(data)
+            written = unsafe_write(data.io, in, inlen)
+            sent = true
+        end
+    catch ex
+        ex isa InterruptException && lostinterrupt()
+    finally
+        sent || holdinterrupts(() -> cut!(data))
+    end
+    return sent ? Cint(written) : Cint(0)
+end
+
+# waits until every ticket handed out is through, for a write that takes no ticket (see
+# `incall`); false once nothing more may be sent on the socket, it having been cut or a
+# record lost. Takes `cond`; the caller holds `ssl.lock`, which keeps `nextticket` still
+function awaitdrained(data::BIOStreamData)
+    Base.@lock data.cond begin
+        while true
+            (data.cut || data.lostfrom != typemax(Int)) && return false
+            drained(data) && return true
+            wait(data.cond)
+        end
+    end
+end
+
 function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
     try
         bio_clear_flags(bio)
@@ -359,13 +416,18 @@ function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
     try
         data = bio_get_data(bio)
         if data isa BIOStreamData
-            # buffer only; the caller of the SSL call this runs inside takes it with
-            # `take!` and writes it to the socket with `drain!` once `ssl.lock` is free
-            buf = data.buf
-            n = length(buf)
-            resize!(buf, n + inlen)
-            GC.@preserve buf unsafe_copyto!(pointer(buf, n + 1), Ptr{UInt8}(in), Int(inlen))
-            return inlen
+            if data.incall
+                # buffer only; the caller of the SSL call this runs inside takes it with
+                # `take!` and writes it to the socket with `drain!` once `ssl.lock` is free
+                buf = data.buf
+                n = length(buf)
+                resize!(buf, n + inlen)
+                GC.@preserve buf unsafe_copyto!(pointer(buf, n + 1), Ptr{UInt8}(in), Int(inlen))
+                return inlen
+            end
+            # a call made on `ssl.ssl` from outside the package (see `incall`): written to
+            # the socket here, as before 1.6.2
+            return rawwrite(data, in, inlen)
         end
         written = unsafe_write(data::IO, in, inlen)
         return Cint(written)
@@ -668,9 +730,33 @@ function ssl_connect(ssl::SSL)
         ssl)
 end
 
-# gone in 1.6.2: with the write BIO buffering, its handshake output never reached the
-# socket, and working on the bare handle it had no way to send it
-ssl_accept(::SSL) = error("ssl_accept was removed: use Sockets.accept(::SSLStream)")
+"""
+    ssl_accept(ssl::SSL)
+
+One round of the server side of the handshake on the bare SSL object, as it has always
+been: `SSL_accept` once, `OpenSSLError` thrown when that did not complete the handshake
+(most often it needs more bytes from the peer first), read ahead set once it did. What
+the round produces reaches the socket from the write BIO callback itself, as a call
+made from outside the package's own (see `BIOStreamData`); the caller holds `ssl.lock`.
+Internal: `Sockets.accept(::SSLStream)` is the way to run the handshake.
+"""
+function ssl_accept(ssl::SSL)
+    if (ret = ccall(
+        (:SSL_accept, libssl),
+        Cint,
+        (SSL,),
+        ssl)) != 1
+        throw(OpenSSLError(ret))
+    end
+
+    readahead!(ssl)
+    return nothing
+end
+
+# read ahead: a recommended optimization when an SSL connection is only ever read from
+# sequentially, which it is, there being no internal buffering of decrypted bytes. Set
+# once the handshake is done
+readahead!(ssl::SSL) = ccall((:SSL_set_read_ahead, libssl), Cvoid, (SSL, Cint), ssl, Cint(1))
 
 # queues the close_notify. Internal, as `ssl_connect`: `close(::SSLStream)` is the way
 # to shut a stream down
@@ -791,7 +877,14 @@ else
         return task
     end
 end
-background(f) = schedule(unscheduled(f))
+# the tests' hook (see `ONKEEP`): called with `f` before the task is made, and what it
+# throws stands for a failure to make or schedule the task
+const ONBACKGROUND = Ref{Any}(nothing)
+function background(f)
+    hook = ONBACKGROUND[]
+    hook === nothing || Base.invokelatest(hook, f)
+    return schedule(unscheduled(f))
+end
 
 # `f()` under `l`, for the cleanup sections, which have to get through; then `then`, if
 # given, on its value, outside the lock. The wait for the lock is where an exception
@@ -1085,8 +1178,8 @@ end
 macro sslcall(ssl, op, expr)
     # the temporaries are gensyms: the whole quote is escaped, and plain names would
     # clobber a caller's locals of the same name
-    _err, _ret, _r, _e, _pending, _ended =
-        gensym.(("err", "ret", "r", "e", "pending", "ended"))
+    _err, _ret, _r, _e, _pending, _ended, _data =
+        gensym.(("err", "ret", "r", "e", "pending", "ended", "data"))
     esc(quote
         local $_err = nothing
         local $_ret = SSL_ERROR_NONE
@@ -1098,8 +1191,17 @@ macro sslcall(ssl, op, expr)
             $ssl.closed && throwio($op)
             # clear the current error queue before openssl ccall
             clear_errors!()
-            # do the ccall
-            $_r = $expr
+            # do the ccall, the write BIO told to buffer what it produces for `take!`
+            # below (see `incall`); the flag a plain field store, which cannot fail. The
+            # result declared outside the `try`, which is a scope of its own
+            local $_r
+            local $_data = getfield($ssl, :data)
+            try
+                $_data.incall = true
+                $_r = $expr
+            finally
+                $_data.incall = false
+            end
             # the rest in a `try`: cut short (an interrupt at an allocation) after the
             # call, what the call left in the buffer is not to go out with another call's,
             # nor the stream to stay open. The records of a call that did not fail are
@@ -1172,13 +1274,31 @@ function finish_sslcall!(ssl::SSLStream, ret::SSLErrorCode, pending, err; detach
     # failed: the stream was closed and aborted in `@sslcall` already
     err === nothing || throw(err)
     if detach && pending !== nothing
-        background() do
-            try
-                drain!(ssl, pending)
-            catch ex
-                # `drain!` closed the stream; the reader finds that out on its next call
-                @guarded @debug "SSL reply to the peer not sent" ex
+        try
+            background() do
+                try
+                    drain!(ssl, pending)
+                catch ex
+                    # `drain!` closed the stream; the reader finds that out on its next call
+                    @guarded @debug "SSL reply to the peer not sent" ex
+                end
             end
+        catch
+            # no task to send it from (none could be made, or scheduled: an allocation
+            # failed, an interrupt landed): the record is not going out, so its ticket is
+            # given up, which refuses every ticket after it rather than parking them on
+            # this one for good, and the stream is aborted, as for a write cancelled while
+            # it waited for its turn (see `drain!`); both of them, with an interrupt held
+            # back. Should the task have been scheduled all the same (the interrupt
+            # landing after that), its drain finds the ticket given up and does no harm
+            holdinterrupts() do
+                try
+                    abandon!(getfield(ssl, :data), pending.ticket)
+                finally
+                    close(ssl, false)
+                end
+            end
+            rethrow()
         end
     else
         drain!(ssl, pending)
@@ -1435,12 +1555,7 @@ function handshake!(step, ssl::SSLStream, op::Symbol, timeout::Real; finish=noth
             # another task. Or the deadline passed with the stream somehow still open (its
             # abort having failed): the deadline decides, not what the abort left
             (ssl.closed || state[] === :timedout) && throwio(op)
-            ccall(
-                (:SSL_set_read_ahead, libssl),
-                Cvoid,
-                (SSL, Cint),
-                ssl.ssl,
-                Cint(1))
+            readahead!(ssl.ssl)
         end
     catch ex
         # whatever ended the handshake, an interrupt included, a half-done stream is of
@@ -1479,21 +1594,25 @@ function hostname!(ssl::SSLStream, host)
 end
 
 """
-    Sockets.accept(ssl::SSLStream; timeout=Inf)
+    Sockets.accept(ssl::SSLStream; timeout=nothing)
 
-Runs the server side of the TLS handshake on `ssl` and returns once it is complete.
-Throws `EOFError` when the peer goes away first, `IOError` when the handshake fails,
-and `IOError` once `timeout` seconds have passed since the call began, however far the
-handshake got; the stream is closed in each of those cases. `timeout` is a positive
-number of seconds, or `Inf` for none.
+Runs the server side of the TLS handshake on `ssl`.
 
-Before 1.6.2 the call did one round of the handshake and threw `OpenSSLError` whenever
-it needed more bytes from the peer, and the caller retried. Those loops still work, they
-get the completed handshake on the first call, but they no longer see `OpenSSLError`:
-the errors are `EOFError` and `IOError` now. A deadline such a loop enforced between
-attempts is what `timeout` is for.
+With `timeout`, a positive number of seconds or `Inf` for no limit, the whole of it:
+returns once the handshake is complete; throws `EOFError` when the peer goes away first,
+`IOError` when the handshake fails, and `IOError` once `timeout` seconds have passed
+since the call began, however far the handshake got; the stream is closed in each of
+those cases.
+
+Without `timeout`, one round of it, the contract the call has had since before 1.6.2:
+returns once the handshake is complete, and throws `OpenSSLError` when it needs more
+bytes from the peer first, for the caller to wait for them (`eof(ssl.io)`, say) and
+call again; the loops written to that, which enforce their own deadline between calls,
+keep working. A round that failed, the peer's certificate rejected say, throws `IOError`
+and closes the stream, as every SSL call does.
 """
-function Sockets.accept(ssl::SSLStream; timeout::Real=Inf)
+function Sockets.accept(ssl::SSLStream; timeout::Union{Nothing, Real}=nothing)
+    timeout === nothing && return acceptround!(ssl)
     handshake!(ssl, :accept, timeout) do
         @geterror ssl :accept ccall(
             (:SSL_accept, libssl),
@@ -1502,6 +1621,28 @@ function Sockets.accept(ssl::SSLStream; timeout::Real=Inf)
             ssl.ssl)
     end
     return
+end
+
+# one round of the server side of the handshake, what the round produced sent before it
+# returns; a round that needs more bytes says so with `OpenSSLError` and does not wait
+# for them: the loops written to this call wait between calls, and enforce their
+# deadlines there, which a call that waited for the peer itself would defeat
+function acceptround!(ssl::SSLStream)
+    ret = @geterror ssl :accept ccall(
+        (:SSL_accept, libssl),
+        Cint,
+        (SSL,),
+        ssl.ssl)
+    if ret == SSL_ERROR_NONE
+        # done: read ahead set, as `handshake!` sets it
+        Base.@lock ssl.lock begin
+            ssl.closed && throwio(:accept)
+            readahead!(ssl.ssl)
+        end
+        return
+    end
+    # WANT_READ; WANT_WRITE cannot happen, the write BIO takes everything
+    throw(OpenSSLError("accept: $ret, the handshake needs more bytes from the peer; call again once there are some"))
 end
 
 """
@@ -1836,7 +1977,15 @@ function closerest!(ssl::SSLStream, shutdown::Bool)
                 # costs the close_notify, and the close aborts
                 data = getfield(ssl, :data)
                 Base.@lock data.cond begin
-                    data.lostfrom == typemax(Int) && ssl_disconnect(ssl.ssl)
+                    if data.lostfrom == typemax(Int)
+                        # buffered, for the `take!` below (see `incall`)
+                        try
+                            data.incall = true
+                            ssl_disconnect(ssl.ssl)
+                        finally
+                            data.incall = false
+                        end
+                    end
                 end
             end
         finally
