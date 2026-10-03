@@ -356,40 +356,85 @@ drained(data::BIOStreamData) = data.turn == data.nextticket
 # writes a record made by a call from outside the package (see `incall`) to the socket,
 # from the write BIO callback, under whatever locks the caller holds, as before 1.6.2.
 # Once every record the package's own calls ticketed is through, so that the records
-# keep the order OpenSSL made them in. Blocks while the peer's window is full, and
-# nothing of the package's can bound that, every close and watch needing `ssl.lock`
-# first: the caller bounds it as it did then, by closing the socket. Returns what the
-# BIO callback does: the count, or 0 for a failure, which fails the SSL call. A failure
-# leaves the stream unusable (OpenSSL takes a BIO failure as fatal), and a write that
-# did not complete may be queued in libuv still, with a pointer into OpenSSL's own
-# buffer, which `SSL_free` would free under it: so the socket is cut, which cancels the
-# write, and the loss recorded, and nothing more goes out on this stream. An interrupt,
-# which cannot be thrown through OpenSSL's frames, is said to be lost
+# keep the order OpenSSL made them in (see `awaitdrained`, which also bounds the wait).
+# The write itself blocks while the peer's window is full, and nothing of the package's
+# can bound that, every close and watch needing `ssl.lock` first: the caller bounds it
+# as it did then, by closing the socket. Returns what the BIO callback does: the count,
+# or 0 for a failure, which fails the SSL call. A failure leaves the stream unusable
+# (OpenSSL counted the record, and takes a BIO failure as fatal), so the loss is
+# recorded and nothing more goes out on the stream; the records ticketed before it
+# still go, with the close that follows. A write that was started and that libuv did
+# not finish may be queued still, with a pointer into OpenSSL's own buffer, which
+# `SSL_free` would free under it: then the socket is cut, which cancels the write.
+# Nothing can be thrown through OpenSSL's frames: an interrupt is said to be lost, and
+# anything else thrown into the caller's task (a cancellation) is logged, the call
+# failing in its place. The failure is -1 (see `on_bio_stream_write`)
 function rawwrite(data::BIOStreamData, in::Ptr{Cchar}, inlen::Cint)::Cint
     written = 0
     sent = false
+    started = false
+    finished = false
     try
         if awaitdrained(data)
+            started = true
             written = unsafe_write(data.io, in, inlen)
             sent = true
         end
     catch ex
-        ex isa InterruptException && lostinterrupt()
+        # the write ended with libuv's own error status for it (see `drain!`): the
+        # request is finished, and nothing of it queued
+        finished = ex isa Base.IOError && ex.code < 0 && startswith(ex.msg, "write:")
+        if ex isa InterruptException
+            lostinterrupt()
+        elseif finished
+            @guarded @debug "OpenSSL: the socket write of a raw SSL call failed" exception=caught(ex)
+        else
+            @guarded @warn "OpenSSL: an exception landed in the socket write of a raw SSL call and could not be passed on; the call fails instead" exception=caught(ex)
+        end
     finally
-        sent || holdinterrupts(() -> cut!(data))
+        sent || holdinterrupts() do
+            if started && !finished
+                cut!(data)
+            else
+                surely(() -> lose!(data, data.nextticket), data.cond)
+            end
+        end
     end
-    return sent ? Cint(written) : Cint(0)
+    return sent ? Cint(written) : Cint(-1)
 end
 
 # waits until every ticket handed out is through, for a write that takes no ticket (see
-# `incall`); false once nothing more may be sent on the socket, it having been cut or a
-# record lost. Takes `cond`; the caller holds `ssl.lock`, which keeps `nextticket` still
+# `rawwrite`); false once nothing more may be sent on the socket, it having been cut or
+# a record lost, and false once the turn has not moved for `CLOSE_GRACE` seconds: the
+# wait holds `ssl.lock` (the raw caller's), which every close, abort and watch needs
+# first, so a ticket no task will ever drain (its owner stopped between taking it and
+# draining it) would hold the stream for good with nothing able to reach it; the
+# graceful close's measure of a stall bounds it instead. Takes `cond`; the caller holds
+# `ssl.lock`, which keeps `nextticket` still
 function awaitdrained(data::BIOStreamData)
+    grace = CLOSE_GRACE[]
     Base.@lock data.cond begin
-        while true
-            (data.cut || data.lostfrom != typemax(Int)) && return false
-            drained(data) && return true
-            wait(data.cond)
+        turn = data.turn
+        since = time_ns()
+        # wakes the wait at the deadline, a condition's `wait` having no bound of its own;
+        # a tick that comes once the timer is closed only notifies for nothing
+        timer = ticker(grace; interval=grace) do _
+            Base.@lock data.cond notify(data.cond)
+        end
+        try
+            while true
+                (data.cut || data.lostfrom != typemax(Int)) && return false
+                drained(data) && return true
+                if data.turn != turn
+                    turn = data.turn
+                    since = time_ns()
+                elseif (time_ns() - since) / 1e9 >= grace
+                    return false
+                end
+                wait(data.cond)
+            end
+        finally
+            close(timer)
         end
     end
 end
@@ -432,8 +477,11 @@ function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
         written = unsafe_write(data::IO, in, inlen)
         return Cint(written)
     catch e
-        # we don't want to throw a Julia exception from a C callback
-        return Cint(0)
+        # we don't want to throw a Julia exception from a C callback. -1, not 0: OpenSSL
+        # up to 3.5.6 takes a zero from a write callback with no retry flag as a write
+        # that did nothing yet, reports the call a success and keeps the record pending
+        # for the next call to send; -1 fails the call in every version
+        return Cint(-1)
     end
 end
 
@@ -880,10 +928,16 @@ end
 # the tests' hook (see `ONKEEP`): called with `f` before the task is made, and what it
 # throws stands for a failure to make or schedule the task
 const ONBACKGROUND = Ref{Any}(nothing)
-function background(f)
+# `scheduled`, if given, is set just before the task is scheduled, for a caller that has
+# to know whether `f` is going to run should this throw (an interrupt landing after the
+# fact); set before rather than after, so that a task that does run is never taken for
+# one that does not
+function background(f, scheduled::Union{Nothing, Base.RefValue{Bool}}=nothing)
     hook = ONBACKGROUND[]
     hook === nothing || Base.invokelatest(hook, f)
-    return schedule(unscheduled(f))
+    task = unscheduled(f)
+    scheduled === nothing || (scheduled[] = true)
+    return schedule(task)
 end
 
 # `f()` under `l`, for the cleanup sections, which have to get through; then `then`, if
@@ -1274,8 +1328,9 @@ function finish_sslcall!(ssl::SSLStream, ret::SSLErrorCode, pending, err; detach
     # failed: the stream was closed and aborted in `@sslcall` already
     err === nothing || throw(err)
     if detach && pending !== nothing
+        scheduled = Ref(false)
         try
-            background() do
+            background(scheduled) do
                 try
                     drain!(ssl, pending)
                 catch ex
@@ -1289,11 +1344,12 @@ function finish_sslcall!(ssl::SSLStream, ret::SSLErrorCode, pending, err; detach
             # given up, which refuses every ticket after it rather than parking them on
             # this one for good, and the stream is aborted, as for a write cancelled while
             # it waited for its turn (see `drain!`); both of them, with an interrupt held
-            # back. Should the task have been scheduled all the same (the interrupt
-            # landing after that), its drain finds the ticket given up and does no harm
+            # back. Not the ticket when the task was scheduled all the same (an interrupt
+            # landing after that): its drain sends the record or gives the ticket up
+            # itself, and two parties passing one turn would carry it past the tickets
             holdinterrupts() do
                 try
-                    abandon!(getfield(ssl, :data), pending.ticket)
+                    scheduled[] || abandon!(getfield(ssl, :data), pending.ticket)
                 finally
                     close(ssl, false)
                 end

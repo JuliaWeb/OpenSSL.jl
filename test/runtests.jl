@@ -766,10 +766,12 @@ end
 
 # writes until the peer's receive window is full and the writer parks on the socket;
 # returns the task and the count of completed writes. Each write is many times what goes
-# to OpenSSL in one call, so that the parked one has chunks still to go, and more than
-# the kernel's send and receive buffers grow to (Windows and macOS keep growing them for
-# a peer that does not read): a parked write that the buffers could still take would
-# complete of itself, and the tests need it to stay parked until they end it
+# to OpenSSL in one call, so that the parked one has records still to make, and more
+# than the kernel's send and receive buffers grow to (Windows and macOS keep growing
+# them for a peer that does not read): a parked write that the buffers could still take
+# would complete of itself, and the tests need it to stay parked until they end it. One
+# record of it, the one in libuv, may still be accepted as the buffers grow, which is
+# all the Base race described at CancelledInFlightWriter needs
 const PARK_CHUNK = max(32 * 2^20, 3 * OpenSSL.SSL_WRITE_CHUNK)
 function park_writer(client, stop_writing)
     written = Threads.Atomic{Int}(0)
@@ -1219,16 +1221,19 @@ end
 end
 
 @testset "CancelledInFlightWriter" begin
-    # Not on Windows: these cancel a writer inside the socket write, and Base's write
+    # Linux only: these cancel a writer inside the socket write, and Base's write
     # completion callback (`uv_writecb_task`) schedules the waiting task unconditionally
     # while the request still names it, which it does until the task resumes. A write
     # that completes just as its task is cancelled therefore throws "schedule: Task not
     # runnable" out of the libuv callback, into whatever task runs the event loop, and
-    # can wedge the loop. Windows grows the socket buffers for a peer that does not read,
-    # so a parked write completes on its own there and hits that window often; nothing
-    # this package can do about it
-if Sys.iswindows()
-    @test_skip !Sys.iswindows()
+    # can wedge the loop. Windows and macOS grow the socket buffers for a peer that does
+    # not read, so the parked record (not the whole write, see `park_writer`) completes
+    # on its own there and hits that window, Windows often; on Linux it completes only
+    # when the peer reads, which these tests' peers never do. Nothing this package can do
+    # about it: the cancelled write's own cleanup here is sound, the moment of
+    # cancellation is Base's
+if !Sys.islinux()
+    @test_skip Sys.islinux()
 else
     # A writer cancelled inside the socket write itself, not while waiting for its turn:
     # libuv still holds the write, and a pointer into the chunk, so the socket has to be
@@ -1492,6 +1497,48 @@ end
     @test istaskdone(raw) && fetch(raw) == (1, 100)
     @test istaskdone(parked_writer) && fetch(parked_writer) === nothing
     close(client)
+    close(ssl)
+    close(server)
+end
+
+@testset "RawWriteGivesUp" begin
+    # a raw write waits for the records ticketed before it. One whose ticket no task will
+    # ever drain would hold it for good, under `ssl.lock`, where no close or watch can
+    # reach it: once nothing has moved for CLOSE_GRACE the wait gives up, the call fails,
+    # the loss is recorded so nothing more goes out, and the socket is not cut, no write
+    # having been started
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    data = client.data
+    # a ticket taken and never drained
+    stale = Base.@lock client.lock begin
+        append!(data.buf, UInt8[0x17, 0x03, 0x03, 0x00, 0x01, 0x00])
+        take!(data)
+    end
+    grace = OpenSSL.CLOSE_GRACE[]
+    OpenSSL.CLOSE_GRACE[] = 1.0
+    try
+        marker = fill(UInt8(7), 10)
+        raw = @async Base.@lock client.lock begin
+            n = Ref{Csize_t}(0)
+            GC.@preserve marker ccall(
+                (:SSL_write_ex, OpenSSL.libssl),
+                Cint,
+                (OpenSSL.SSL, Ptr{Cvoid}, Csize_t, Ptr{Csize_t}),
+                client.ssl, pointer(marker), length(marker), n)
+        end
+        @test timedwait(() -> istaskdone(raw), 10.0) === :ok
+        @test istaskdone(raw) && fetch(raw) != 1
+        @test data.lostfrom == stale.ticket + 1
+        @test Base.@lock(data.cond, !data.cut)
+        # the stream is unusable from here
+        @test_throws Base.IOError write(client, UInt8[1])
+        @test !isopen(client)
+    finally
+        OpenSSL.CLOSE_GRACE[] = grace
+    end
+    close(client, false)
     close(ssl)
     close(server)
 end
@@ -2300,9 +2347,9 @@ end
 saw(logger::ThrowingLogger, what) = Base.@lock logger.lock any(m -> occursin(what, m), logger.seen)
 
 @testset "ThrowingLogger" begin
-    # Not on Windows: see CancelledInFlightWriter
-if Sys.iswindows()
-    @test_skip !Sys.iswindows()
+    # Linux only: see CancelledInFlightWriter
+if !Sys.islinux()
+    @test_skip Sys.islinux()
 else
     # what the library logs on its cleanup paths cannot stop them: a cancelled in-flight
     # write through the fallback close, which logs before it schedules the close, with
