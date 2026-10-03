@@ -1560,8 +1560,8 @@ mutable struct BIO
 
         # note that `data` must be held as a reference somewhere else
         # since it is not referenced by the BIO directly
-        # e.g. in SSLStream, we keep the `io` reference that is passed to
-        # the read/write BIOs
+        # e.g. SSLStream gives both its BIOs the same `BIOStreamData`, and keeps it
+        # in its `data` field
         ccall(
             (:BIO_set_data, libcrypto),
             Cvoid,
@@ -3053,46 +3053,65 @@ Base.show(io::IO, evp_pkey::EvpPKey) = write(io, String(evp_pkey))
     Error handling.
 """
 function get_error()::String
-    # Create memory BIO
-    bio = BIO(BIOMethodMemory())
-
-    local error_msg::String
-
-    # Check existing error messages stored in task TLS.
+    # what the thread's queue holds, and a message a call left in the task's local
+    # storage (see `update_tls_error_state`) ahead of it, taken off as it is read
+    queue = errorqueue()
     if haskey(task_local_storage(), :openssl_err)
-        # Copy existing error from task TLS.
         tls_msg = task_local_storage(:openssl_err)
         delete!(task_local_storage(), :openssl_err)
-
-        # Clear the error queue, print the error messages to the memory BIO.
-        ccall(
-            (:ERR_print_errors, libcrypto),
-            Cvoid,
-            (BIO,),
-            bio)
-
-        bio_msg = String(bio_get_mem_data(bio))
-        error_msg = "$(tls_msg) : $(bio_msg)"
-    else
-        # Clear the error queue, print the error messages to the memory BIO.
-        ccall(
-            (:ERR_print_errors, libcrypto),
-            Cvoid,
-            (BIO,),
-            bio)
-
-        error_msg = String(bio_get_mem_data(bio))
+        return "$(tls_msg) : $(queue)"
     end
+    return queue
+end
 
-    # Read the formatted error messages from the memory BIO.
+# the thread's OpenSSL error queue, printed into a memory BIO and so taken off the
+# queue; cleared all the same should the print fail. The BIO made here by hand: the
+# constructor reports a failure through `get_error`, which reads the queue here, and
+# would go round, taking a task-local message on the way
+function errorqueue()::String
+    ptr = ccall(
+        (:BIO_new, libcrypto),
+        Ptr{Cvoid},
+        (BIOMethod,),
+        BIOMethodMemory())
+    # nothing to print into (OpenSSL out of memory, most likely, which is then the very
+    # reason to report): the queue read entry by entry into a buffer of Julia's instead
+    ptr == C_NULL && return errorqueue_lines()
+    # the BIO freed through its pointer, whatever the wrapper made of it
+    try
+        bio = BIO(ptr)
+        ccall(
+            (:ERR_print_errors, libcrypto),
+            Cvoid,
+            (BIO,),
+            bio)
+        return String(bio_get_mem_data(bio))
+    finally
+        clear_errors!()
+        ccall((:BIO_free, libcrypto), Cint, (Ptr{Cvoid},), ptr)
+    end
+end
 
-    # Ensure the queue is clear (if ERR_print_errors fails).
-    clear_errors!()
-
-    # Free bio.
-    free(bio)
-
-    return error_msg
+# the thread's error queue as `ERR_error_string_n` gives each entry, one a line, taken
+# off the queue; for when no BIO can be made to print it
+function errorqueue_lines()::String
+    out = IOBuffer()
+    line = Vector{UInt8}(undef, 256)
+    try
+        while (code = ccall((:ERR_get_error, libcrypto), Culong, ())) != 0
+            GC.@preserve line begin
+                ccall(
+                    (:ERR_error_string_n, libcrypto),
+                    Cvoid,
+                    (Culong, Ptr{UInt8}, Csize_t),
+                    code, line, length(line))
+                println(out, unsafe_string(pointer(line)))
+            end
+        end
+    finally
+        clear_errors!()
+    end
+    return String(take!(out))
 end
 
 function clear_errors!()
