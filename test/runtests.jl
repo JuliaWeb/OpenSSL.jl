@@ -1543,6 +1543,60 @@ end
     close(server)
 end
 
+@testset "RawWriteCancelled" begin
+    # Linux only, as CancelledInFlightWriter: a task cancelled inside a raw write's socket
+    # write. Nothing can be thrown through OpenSSL's frames, so the cancellation is
+    # logged and the SSL call fails; the write libuv may still hold, with a pointer into
+    # OpenSSL's buffer, is cancelled by cutting the socket, and the loss is recorded
+if !Sys.islinux()
+    @test_skip Sys.islinux()
+else
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    data = client.data
+    logger = Test.TestLogger()
+    # the server reads nothing: raw records fill the socket until one parks in its write
+    chunk = zeros(UInt8, 16 * 1024)
+    raw = Base.CoreLogging.with_logger(logger) do
+        @async Base.@lock client.lock begin
+            n = Ref{Csize_t}(0)
+            local r = Cint(1)
+            while r == 1
+                r = GC.@preserve chunk ccall(
+                    (:SSL_write_ex, OpenSSL.libssl),
+                    Cint,
+                    (OpenSSL.SSL, Ptr{Cvoid}, Csize_t, Ptr{Csize_t}),
+                    client.ssl, pointer(chunk), length(chunk), n)
+            end
+            r
+        end
+    end
+    # parked: bytes queued in libuv, the same amount half a second later
+    queued() = OpenSSL.writequeuesize(client.io)
+    parked = timedwait(60.0; pollint=0.5) do
+        before = queued()
+        sleep(0.5)
+        !istaskdone(raw) && before > 0 && queued() == before
+    end
+    @test parked === :ok
+    if parked === :ok
+        schedule(raw, ErrorException("cancelled"); error=true)
+        @test timedwait(() -> istaskdone(raw), 10.0) === :ok
+        # the call failed, the task went on past it to return the failure
+        @test istaskdone(raw) && !istaskfailed(raw) && fetch(raw) != 1
+        @test Base.@lock(data.cond, data.cut)
+        @test data.lostfrom != typemax(Int)
+        @test timedwait(() -> !isopen(client.io), 30.0) === :ok
+        @test any(l -> l.level == Base.CoreLogging.Warn && occursin("could not be passed on", l.message), logger.logs)
+    else
+        close(client, false)
+    end
+    close(ssl)
+    close(server)
+end
+end
+
 @testset "DetachedDrainNotScheduled" begin
     # what a read produces for the peer goes out from a task of its own (see
     # `finish_sslcall!`). When that task cannot be made or scheduled, the record's ticket
