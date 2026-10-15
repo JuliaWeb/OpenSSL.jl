@@ -1462,11 +1462,11 @@ end
 Generate EC key pair from a curve identifier. See ec_builtin_curves().
 
 """
-function ec_generate_key(nid::Int32)::EC
+function ec_generate_key(nid::Integer)::EC
     ecptr = ccall(
         (:EC_KEY_new_by_curve_name, libcrypto),
         Ptr{Cvoid},
-        (Cint,), nid)
+        (Cint,), Cint(nid))
     if ecptr == C_NULL
         throw(OpenSSLError())
     end
@@ -1480,11 +1480,7 @@ end
 """
     ec_generate_key(curvename)
 
-Generate EC key pair from a curve name. See ec_builtin_curves(). Note! the names are
-only loaded in OpenSSL v3, in earlier version the names are the empty string. Use instead
-ec_generate_key(nid) where nid is the numeric curve identifier.
-
-!!! compat "OpenSSL v3" `ec_generate_key(curvename)` is only available with version 3 of the OpenSSL_jll
+Generate EC key pair from a curve name, such as `"prime256v1"`. See ec_builtin_curves().
 """
 function ec_generate_key(curvename::AbstractString)::EC
     found = filter(x -> x.name == curvename, ec_builtin_curves())
@@ -1511,12 +1507,8 @@ end
     ec_builtin_curves()
 
 Get all the builtin curves. Use id or name when calling ec_generate_key.
-Note! Curve names are only loaded in OpenSSL v3 and not available in earlier versions.
-    
 """
 function ec_builtin_curves()
-    version = OpenSSL.version_number()
-
     curves = Vector{ECBuiltinCurve}()
     ncurves = ccall(
         (:EC_get_builtin_curves, libcrypto),
@@ -1538,16 +1530,14 @@ function ec_builtin_curves()
         for ecbc in builtin_curve_ids
             name = ""
             nid = convert(Int32, ecbc.nid)
-            comment = String(unsafe_string(ecbc.comment))
-            if version >= v"3.0"
-                namecptr = ccall(
-                    (:OSSL_EC_curve_nid2name, libcrypto),
-                    Ptr{Cchar},
-                    (Cint,),
-                    ecbc.nid) 
-                if namecptr != C_NULL
-                    name = String(unsafe_string(namecptr))
-                end
+            comment = unsafe_string(ecbc.comment)
+            namecptr = ccall(
+                (:OBJ_nid2sn, libcrypto),
+                Ptr{Cchar},
+                (Cint,),
+                ecbc.nid)
+            if namecptr != C_NULL
+                name = unsafe_string(namecptr)
             end
             push!(curves, ECBuiltinCurve(nid, name, comment))
         end

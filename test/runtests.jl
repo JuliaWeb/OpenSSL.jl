@@ -597,8 +597,6 @@ end
 end
 
 @testset "EC" begin
-    version = OpenSSL.version_number()
-
     eckey = EvpPKey(OpenSSL.EC())
     @test eckey.key_type == OpenSSL.EVP_PKEY_EC
     free(eckey)
@@ -625,14 +623,14 @@ end
     @test occursin("/CN=ec.example", String(cert.subject_name))
     free(eckey)
 
-    if version >= v"3.0"
-        # Curve from name is only available in OpenSSL 3+
-        @test_throws ArgumentError OpenSSL.ec_generate_key("XXXX Non existing curve name XXXX")
+    # curve ids can be any integer type
+    @test OpenSSL.ec_generate_key(Int(first(curves).id)) isa OpenSSL.EC
 
-        eckey = EvpPKey(OpenSSL.ec_generate_key("prime256v1"))
-        @test eckey.key_type == OpenSSL.EVP_PKEY_EC
-        free(eckey)
-    end
+    @test_throws ArgumentError OpenSSL.ec_generate_key("XXXX Non existing curve name XXXX")
+
+    eckey = EvpPKey(OpenSSL.ec_generate_key("prime256v1"))
+    @test eckey.key_type == OpenSSL.EVP_PKEY_EC
+    free(eckey)
 end
 
 @testset "X509Attribute" begin
