@@ -1398,6 +1398,14 @@ function dsa_generate_key(; bits::Int32=Int32(1024))::DSA
         throw(OpenSSLError())
     end
 
+    if ccall(
+        (:DSA_generate_key, libcrypto),
+        Cint,
+        (DSA,),
+        dsa) != 1
+        throw(OpenSSLError())
+    end
+
     return dsa
 end
 

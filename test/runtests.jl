@@ -574,7 +574,20 @@ end
 end
 
 @testset "DSA" begin
-    dsa = dsa_generate_key()
+    evp_pkey = EvpPKey(dsa_generate_key())
+    @test occursin("priv:", String(evp_pkey))
+
+    # the generated pair signs a certificate, and verifies the signature
+    x509_certificate = X509Certificate()
+    x509_certificate.public_key = evp_pkey
+    x509_name = X509Name()
+    add_entry(x509_name, "CN", "dsa.example")
+    x509_certificate.subject_name = x509_name
+    x509_certificate.issuer_name = x509_name
+    Dates.adjust(x509_certificate.time_not_before, Second(0))
+    Dates.adjust(x509_certificate.time_not_after, Year(1))
+    sign_certificate(x509_certificate, evp_pkey)
+    @test x509_certificate.public_key == evp_pkey
 end
 
 @testset "X509Attribute" begin
