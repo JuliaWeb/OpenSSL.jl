@@ -296,18 +296,11 @@ end
 
     sign_certificate(x509_certificate, evp_pkey)
 
-    port, server = Sockets.listenany(10000)
-    iob = connect(port)
-    sob = accept(server)
-    local cert_pem
-    try
-        write(iob, x509_certificate)
-        cert_pem = String(readavailable(sob))
-    finally
-        close(iob)
-        close(sob)
-        close(server)
-    end
+    io = IOBuffer()
+    n = write(io, x509_certificate)
+    cert_pem = String(take!(io))
+    @test n == sizeof(cert_pem)
+    @test startswith(cert_pem, "-----BEGIN CERTIFICATE-----")
 
     x509_certificate2 = X509Certificate(cert_pem)
 
@@ -318,7 +311,15 @@ end
 
     @test x509_string == x509_string2
 
+    # text ahead of the PEM block may be non-ASCII
+    @test X509Certificate("friendlyName: Zoë Ünïcödé\n" * cert_pem) == x509_certificate
+
     p12_object = P12Object(evp_pkey, x509_certificate)
+
+    io = IOBuffer()
+    n = write(io, p12_object)
+    @test n > 0
+    @test n == length(take!(io))
 
     OpenSSL.unpack(p12_object)
 end
@@ -372,6 +373,12 @@ end
     finalize(x509_exts)
 
     sign_request(x509_request, evp_pkey)
+
+    io = IOBuffer()
+    n = write(io, x509_request)
+    req_pem = String(take!(io))
+    @test n == sizeof(req_pem)
+    @test startswith(req_pem, "-----BEGIN CERTIFICATE REQUEST-----")
 
     # Create a certificate.
     x509_certificate = X509Certificate()
@@ -550,24 +557,19 @@ end
 @testset "SerializePrivateKey" begin
     evp_pkey = EvpPKey(rsa_generate_key())
 
-    port, server = Sockets.listenany(10000)
-    iob = connect(port)
-    sob = accept(server)
-    local pkey_pem
-    try
-        write(iob, evp_pkey)
-        pkey_pem = String(readavailable(sob))
-    finally
-        close(iob)
-        close(sob)
-        close(server)
-    end
+    io = IOBuffer()
+    n = write(io, evp_pkey)
+    pkey_pem = String(take!(io))
+    @test n == sizeof(pkey_pem)
 
     @test startswith(pkey_pem, "-----BEGIN PRIVATE KEY-----")
 
     _evp_pkey = EvpPKey(pkey_pem)
 
     @test _evp_pkey == evp_pkey
+
+    # text ahead of the PEM block may be non-ASCII
+    @test EvpPKey("friendlyName: Zoë Ünïcödé\n" * pkey_pem) == evp_pkey
 
     free(evp_pkey)
     free(_evp_pkey)

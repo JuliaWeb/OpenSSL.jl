@@ -1689,7 +1689,7 @@ function Base.unsafe_write(bio::BIO, out_buffer::Ptr{UInt8}, out_length::Int)
     end
 end
 
-Base.write(bio::BIO, out_data) = return unsafe_write(bio, pointer(out_data), length(out_data))
+Base.write(bio::BIO, out_data) = return GC.@preserve out_data unsafe_write(bio, pointer(out_data), sizeof(out_data))
 
 """
     ASN1_TIME.
@@ -1816,7 +1816,7 @@ mutable struct EvpPKey
     function EvpPKey(in_string::AbstractString)::EvpPKey
         # Create a BIO and write the PEM string.
         bio = BIO(BIOMethodMemory())
-        unsafe_write(bio, pointer(in_string), length(in_string))
+        write(bio, in_string)
 
         evp_pkey = ccall(
             (:PEM_read_bio_PrivateKey, libcrypto),
@@ -1863,9 +1863,9 @@ function Base.:(==)(evp_pkey_1::EvpPKey, evp_pkey_2::EvpPKey)
 end
 
 function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
-    bio = BIO(io)
+    bio = BIO(BIOMethodMemory())
 
-    GC.@preserve io begin
+    GC.@preserve bio begin
         if ccall(
             (:PEM_write_bio_PrivateKey, libcrypto),
             Cint,
@@ -1879,6 +1879,7 @@ function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C
             C_NULL) != 1
             throw(OpenSSLError())
         end
+        return write(io, bio_get_mem_data(bio))
     end
 end
 
@@ -2212,7 +2213,7 @@ mutable struct X509Certificate
     function X509Certificate(in_string::AbstractString)::X509Certificate
         # Create a BIO and write the PEM string.
         bio = BIO(BIOMethodMemory())
-        unsafe_write(bio, pointer(in_string), length(in_string))
+        write(bio, in_string)
 
         x509 = ccall(
             (:PEM_read_bio_X509, libcrypto),
@@ -2269,9 +2270,9 @@ function Base.:(==)(x509_cert_1::X509Certificate, x509_cert_2::X509Certificate)
 end
 
 function Base.write(io::IO, x509_cert::X509Certificate)
-    bio = BIO(io)
+    bio = BIO(BIOMethodMemory())
 
-    GC.@preserve io begin
+    GC.@preserve bio begin
         if ccall(
             (:PEM_write_bio_X509, libcrypto),
             Cint,
@@ -2280,6 +2281,7 @@ function Base.write(io::IO, x509_cert::X509Certificate)
             x509_cert) != 1
             throw(OpenSSLError())
         end
+        return write(io, bio_get_mem_data(bio))
     end
 end
 
@@ -2555,9 +2557,9 @@ function free(x509_req::X509Request)
 end
 
 function Base.write(io::IO, x509_req::X509Request)
-    bio = BIO(io)
+    bio = BIO(BIOMethodMemory())
 
-    GC.@preserve io begin
+    GC.@preserve bio begin
         if ccall(
             (:PEM_write_bio_X509_REQ, libcrypto),
             Cint,
@@ -2566,6 +2568,7 @@ function Base.write(io::IO, x509_req::X509Request)
             x509_req) != 1
             throw(OpenSSLError())
         end
+        return write(io, bio_get_mem_data(bio))
     end
 end
 
@@ -2834,9 +2837,9 @@ function free(p12_object::P12Object)
 end
 
 function Base.write(io::IO, p12_object::P12Object)
-    bio = BIO(io)
+    bio = BIO(BIOMethodMemory())
 
-    GC.@preserve io begin
+    GC.@preserve bio begin
         if ccall(
             (:i2d_PKCS12_bio, libcrypto),
             Cint,
@@ -2845,6 +2848,7 @@ function Base.write(io::IO, p12_object::P12Object)
             p12_object) != 1
             throw(OpenSSLError())
         end
+        return write(io, bio_get_mem_data(bio))
     end
 end
 
