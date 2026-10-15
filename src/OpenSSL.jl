@@ -1188,11 +1188,7 @@ EvpSHA512()::EvpDigest = EvpDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, (
 
 EvpDSS1()::EvpDigest = error("DSS1 was removed in OpenSSL 1.1; use EvpSHA1() with DSA keys")
 
-if v"3.0.0" <= version_number() <= v"3.0.6"
-    EvpRIPEMD160() = error("this version of OpenSSL does not support RIPEMD160")
-else
-    EvpRIPEMD160()::EvpDigest = EvpDigest(ccall((:EVP_ripemd160, libcrypto), Ptr{Cvoid}, ()))
-end
+EvpRIPEMD160()::EvpDigest = EvpDigest(ccall((:EVP_ripemd160, libcrypto), Ptr{Cvoid}, ()))
 
 """
     EVP Message Digest Context.
