@@ -2542,7 +2542,11 @@ mutable struct X509Request
             throw(OpenSSLError())
         end
 
-        return X509Request(x509_req)
+        x509_req = X509Request(x509_req)
+        # 0 (version 1) is the only version a certificate request can have, and OpenSSL 3
+        # fails to verify a request whose version is unset
+        set_version(x509_req, 0)
+        return x509_req
     end
 
     function X509Request(x509::Ptr{Cvoid})
