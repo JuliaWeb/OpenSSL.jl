@@ -1172,7 +1172,7 @@ end
 
 EvpMDNull()::EvpDigest = EvpDigest(ccall((:EVP_md_null, libcrypto), Ptr{Cvoid}, ()))
 
-EvpMD2()::EvpDigest = EvpDigest(ccall((:EVP_md2, libcrypto), Ptr{Cvoid}, ()))
+EvpMD2()::EvpDigest = error("MD2 is not available in OpenSSL 1.1 and later")
 
 EvpMD5()::EvpDigest = EvpDigest(ccall((:EVP_md5, libcrypto), Ptr{Cvoid}, ()))
 
@@ -1186,7 +1186,7 @@ EvpSHA384()::EvpDigest = EvpDigest(ccall((:EVP_sha384, libcrypto), Ptr{Cvoid}, (
 
 EvpSHA512()::EvpDigest = EvpDigest(ccall((:EVP_sha512, libcrypto), Ptr{Cvoid}, ()))
 
-EvpDSS1()::EvpDigest = EvpDigest(ccall((:EVP_dss1, libcrypto), Ptr{Cvoid}, ()))
+EvpDSS1()::EvpDigest = error("DSS1 was removed in OpenSSL 1.1; use EvpSHA1() with DSA keys")
 
 if v"3.0.0" <= version_number() <= v"3.0.6"
     EvpRIPEMD160() = error("this version of OpenSSL does not support RIPEMD160")
