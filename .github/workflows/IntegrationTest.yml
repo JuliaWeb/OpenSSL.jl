@@ -15,6 +15,7 @@ jobs:
   test:
     name: ${{ matrix.package.repo }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +46,9 @@ jobs:
             # Force downstream tests to use this PR's version of the package.
             Pkg.develop(PackageSpec(path="."))  # resolver may fail with main deps
             Pkg.update()
-            Pkg.test()  # resolver may fail with test time deps
+            # client.jl tests HTTP.jl's HTTPS client, the part that uses OpenSSL.jl; the full
+            # suite can hang in tests that don't use it (sse.jl, on Julia 1.13)
+            Pkg.test(; test_args=["client.jl"])  # resolver may fail with test time deps
           catch err
             err isa Pkg.Resolve.ResolverError || rethrow()
             # If we can't resolve that means this is incompatible by SemVer and this is fine;
