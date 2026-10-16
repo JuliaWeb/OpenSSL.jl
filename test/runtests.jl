@@ -277,6 +277,17 @@ end
     @test bytes2hex(digest(OpenSSL.EvpRIPEMD160(), IOBuffer("abc"))) == "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc"
 end
 
+@testset "HMAC" begin
+	# echo -n "Hello world" | openssl dgst -sha256 -mac hmac -macopt hexkey:01020304
+	@test bytes2hex(hmac(OpenSSL.EvpSHA256(), "Hello world", hex2bytes("01020304"))) == "760e94f3d42452f372885f22d3ed5915ffa5a7d6ddf38716331f9c2786f21e5a"
+
+	# echo -n "Hello world" | openssl dgst -sha512 -hmac "Σλ"
+	@test bytes2hex(hmac(OpenSSL.EvpSHA512(), "Hello world", "Σλ")) == "dfe48de81d0f5f8976d20e10c6fa2f82ff3cc28ae5060b396f70e26d45563a4cfa446d53d5fbea377018b54dac1ec368c979fb2b4a99f642cb0a2d8422c3bfa6"
+
+	# echo -n "Hello world" | openssl dgst -sha256 -hmac ""
+	@test bytes2hex(hmac(OpenSSL.EvpSHA256(), [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64], b"")) == "c50d316a00f927059322a898ea2fa7321fdb4d32eb749656ea7ba7775a870dc0"
+end
+
 @testset "SelfSignedCertificate" begin
     x509_certificate = X509Certificate()
 
@@ -675,8 +686,8 @@ end
 
 @testset "CACertsLoading" begin
     certs_dir = joinpath(@__DIR__, "certs")
-    certs_path = joinpath(certs_dir, "ca-certificates.crt") 
-    
+    certs_path = joinpath(certs_dir, "ca-certificates.crt")
+
     ssl_method = OpenSSL.TLSClientMethod()
     ctx = OpenSSL.SSLContext(ssl_method, certs_path)
     @test typeof(ctx) == OpenSSL.SSLContext
