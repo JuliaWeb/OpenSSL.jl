@@ -777,3 +777,30 @@ end
     close(ssl, false)
     close(server)
 end
+
+@testset "TruncatedRecordEOF" begin
+    # A peer that goes away in the middle of a record leaves a partial record buffered:
+    # `haspending` stays true, `SSL_peek_ex` keeps asking for more bytes, and the socket
+    # is at EOF. `eof` has to report the end of the stream rather than loop on that.
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    server_task = @async eof(ssl)
+    # keep taking whatever the server sends after the handshake (session tickets) off
+    # the socket, so that closing it sends a FIN rather than a RST
+    drain = @async while isopen(client.io)
+        readavailable(client.io)
+    end
+    sleep(0.5)
+    # a record header announcing 100 bytes, followed by only 3 of them, then close
+    write(client.io, UInt8[0x17, 0x03, 0x03, 0x00, 0x64, 0xaa, 0xbb, 0xcc])
+    close(client.io)
+    @test timedwait(() -> istaskdone(drain), 5.0) === :ok
+    # the spin never yields, so on one thread a hang here starves this task too: a
+    # task that does not finish is reported by the timeout, a spinning one by CI
+    @test timedwait(() -> istaskdone(server_task), 30.0) === :ok
+    @test istaskdone(server_task) && fetch(server_task) === true
+    close(client, false)
+    close(ssl)
+    close(server)
+end
