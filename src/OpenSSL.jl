@@ -30,7 +30,7 @@ export TLSv12ClientMethod, TLSv12ServerMethod,
     EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
     EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
     encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final,
-    digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
+    digest, hmac, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
     add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
     get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
@@ -1291,6 +1291,34 @@ function digest(evp_digest::EvpDigest, io::IO)
     return result
 end
 
+
+"""
+    Compute the hash-based message authentication code of the given data using a key and a hash function.
+"""
+function hmac(evp_digest::EvpDigest, in_data::AbstractVector{UInt8}, key::AbstractVector{UInt8})::Vector{UInt8}
+    out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
+    out_length = Ref{UInt32}(0)
+    GC.@preserve key in_data out_data out_length begin
+        if ccall(
+            (:HMAC, libcrypto),
+            Ptr{Cchar},
+            (EvpDigest, Ptr{Cvoid}, Cint, Ptr{Cchar}, Csize_t, Ptr{Cchar}, Ptr{Cuint}),
+            evp_digest,
+            pointer(key), length(key),
+            pointer(in_data), length(in_data),
+            pointer(out_data), pointer_from_objref(out_length)) == C_NULL
+            throw(OpenSSLError())
+        end
+    end
+    resize!(out_data, out_length.x)
+    return out_data
+end
+
+hmac(evp_digest::EvpDigest, in_data::AbstractString, key::AbstractString)::Vector{UInt8} = hmac(evp_digest, codeunits(in_data), codeunits(key))
+hmac(evp_digest::EvpDigest, in_data::AbstractString, key::AbstractVector{UInt8})::Vector{UInt8} = hmac(evp_digest, codeunits(in_data), key)
+
+
+
 """
     RSA structure.
     The RSA structure consists of several BIGNUM components.
@@ -1454,7 +1482,7 @@ end
 
 """
     ec_generate_key(nid)
-    
+
 Generate EC key pair from a curve identifier. See ec_builtin_curves().
 
 """
@@ -1954,7 +1982,7 @@ mutable struct EvpPKey
 
     function EvpPKey(ec::EC)::EvpPKey
         evp_pkey = EvpPKey()
-    
+
         if ccall(
             (:EVP_PKEY_assign, libcrypto),
             Cint, (EvpPKey, Cint, EC),
@@ -1963,7 +1991,7 @@ mutable struct EvpPKey
             ec) != 1
             throw(OpenSSLError())
         end
-    
+
         ec.ec = C_NULL
         return evp_pkey
     end
