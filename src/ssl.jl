@@ -126,6 +126,11 @@ function TLSServerMethod()
 end
 
 const SSL_MODE_AUTO_RETRY = 0x00000004
+const SSL_VERIFY_NONE = Cint(0x00)
+const SSL_VERIFY_PEER = Cint(0x01)
+const SSL_VERIFY_FAIL_IF_NO_PEER_CERT = Cint(0x02)
+const SSL_VERIFY_CLIENT_ONCE = Cint(0x04)
+const SSL_VERIFY_POST_HANDSHAKE = Cint(0x08)
 
 # Use NetworkOptions for default CA file so that it can be configured using the standard
 # environment variables (JULIA_SSL_CA_ROOTS_PATH, SSL_CERT_DIR, and SSL_CERT_FILE).
@@ -174,25 +179,80 @@ end
 function ca_chain!(ssl_context::SSLContext, cacert::String)
 
     if isfile(cacert)
-        ccall(
-            (:SSL_CTX_load_verify_locations, libssl),
-            Cint,
-            (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
-            ssl_context,
-            cacert,
-            C_NULL)
+        ssl_load_verify_locations(ssl_context, cacert, nothing)
     elseif isdir(cacert)
-        ccall(
-            (:SSL_CTX_load_verify_locations, libssl),
-            Cint,
-            (SSLContext, Ptr{Cchar}, Ptr{Cchar}),
-            ssl_context,
-            C_NULL,
-            cacert)
+        ssl_load_verify_locations(ssl_context, nothing, cacert)
     else
         ArgumentError("Invalid CA certificates location: $cacert")
     end
 
+end
+
+"""
+    ssl_set_verify(ssl_context::SSLContext, mode::Integer)
+
+Sets certificate verification mode for new SSL connections created from this context.
+"""
+function ssl_set_verify(ssl_context::SSLContext, mode::Integer)
+    ccall(
+        (:SSL_CTX_set_verify, libssl),
+        Cvoid,
+        (SSLContext, Cint, Ptr{Cvoid}),
+        ssl_context,
+        Cint(mode),
+        C_NULL)
+    return nothing
+end
+
+"""
+    ssl_load_verify_locations(ssl_context::SSLContext, cafile::Union{Nothing, String}, capath::Union{Nothing, String})
+
+Loads trusted CA certificates from a file and/or directory.
+"""
+function ssl_load_verify_locations(ssl_context::SSLContext, cafile::Union{Nothing,String}, capath::Union{Nothing,String})
+    return ccall(
+        (:SSL_CTX_load_verify_locations, libssl),
+        Cint,
+        (SSLContext, Cstring, Cstring),
+        ssl_context,
+        isnothing(cafile) ? C_NULL : cafile,
+        isnothing(capath) ? C_NULL : capath)
+end
+
+"""
+    ssl_load_client_ca_file(cafile::String)
+
+Loads client CA names from a PEM file. Returns an opaque pointer to be passed
+to `ssl_set_client_ca_list`. Used for mTLS server configuration to advertise
+acceptable client CAs during the TLS handshake.
+"""
+function ssl_load_client_ca_file(cafile::String)
+    ca_list = ccall(
+        (:SSL_load_client_CA_file, libssl),
+        Ptr{Cvoid},
+        (Cstring,),
+        cafile)
+    if ca_list == C_NULL
+        throw(OpenSSLError())
+    end
+    return ca_list
+end
+
+"""
+    ssl_set_client_ca_list(ssl_context::SSLContext, ca_list::Ptr{Cvoid})
+
+Sets the list of CAs sent to the client when requesting a client certificate.
+The `ca_list` should be obtained from `ssl_load_client_ca_file`.
+The SSLContext takes ownership of `ca_list`; do not free it manually.
+"""
+function ssl_set_client_ca_list(ssl_context::SSLContext, ca_list::Ptr{Cvoid})
+    ccall(
+        (:SSL_CTX_set_client_CA_list, libssl),
+        Cvoid,
+        (SSLContext, Ptr{Cvoid}),
+        ssl_context,
+        ca_list)
+    return nothing
 end
 
 function free(ssl_context::SSLContext)
@@ -389,6 +449,19 @@ function get_error(ssl::SSL, ret::Cint)::SSLErrorCode
 end
 
 """
+    ssl_get_verify_result(ssl::SSL)
+
+Returns the result of certificate verification for this SSL connection.
+"""
+function ssl_get_verify_result(ssl::SSL)
+    return ccall(
+        (:SSL_get_verify_result, libssl),
+        Cint,
+        (SSL,),
+        ssl)
+end
+
+"""
     SSLStream.
 """
 mutable struct SSLStream <: IO
@@ -524,11 +597,7 @@ function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
     if require_ssl_verification
         Base.@lock ssl.lock begin
             ssl.closed && throwio(:verify_result)
-            if (ret = ccall(
-                (:SSL_get_verify_result, libssl),
-                Cint,
-                (SSL,),
-                ssl.ssl)) != 0
+            if (ret = ssl_get_verify_result(ssl.ssl)) != 0
                 throw(OpenSSLError(unsafe_string(ccall(
                     (:X509_verify_cert_error_string, libcrypto),
                     Ptr{UInt8},
