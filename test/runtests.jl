@@ -23,6 +23,51 @@ macro catch_exception_object(code)
     end
 end
 
+# A self-signed server context for tests that talk to themselves over 127.0.0.1.
+function selfsigned_server_ctx()
+    cert = X509Certificate()
+    key = EvpPKey(rsa_generate_key())
+    cert.public_key = key
+    name = X509Name()
+    add_entry(name, "CN", "localhost")
+    cert.subject_name = name
+    cert.issuer_name = name
+    Dates.adjust(cert.time_not_before, Second(0))
+    Dates.adjust(cert.time_not_after, Year(1))
+    sign_certificate(cert, key)
+    ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod(), "")
+    OpenSSL.ssl_use_certificate(ctx, cert)
+    OpenSSL.ssl_use_private_key(ctx, key)
+    return ctx
+end
+
+# `accept(ssl)` runs one round of the handshake and throws `OpenSSLError` when it needs
+# more bytes from the peer; this waits for them and calls again until it completes.
+function accept_handshake(ssl)
+    while true
+        try
+            return Sockets.accept(ssl)
+        catch ex
+            ex isa OpenSSL.OpenSSLError || rethrow()
+            eof(ssl.io) && throw(EOFError())
+        end
+    end
+end
+
+# A connected client stream and the server stream at the other end.
+function connected_pair(server_ctx, server)
+    server_task = @async begin
+        ssl = OpenSSL.SSLStream(server_ctx, accept(server))
+        accept_handshake(ssl)
+        ssl
+    end
+    port = Sockets.getsockname(server)[2]
+    client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
+        Sockets.connect(ip"127.0.0.1", port))
+    Sockets.connect(client; require_ssl_verification=false)
+    return client, fetch(server_task)
+end
+
 # Verifies calling into OpenSSL library.
 @testset "OpenSSL" begin
     @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_create_ptr != C_NULL
@@ -685,4 +730,48 @@ end
 
     @test_throws ErrorException OpenSSL.SSLContext(ssl_method, "does_not_exist")
 
+end
+
+@testset "ConcurrentWriters" begin
+    # Several tasks writing to one stream, each with its own chunk size: the byte count
+    # `SSL_write_ex` reports has to be the one of this task's call, not of whichever
+    # task ran last on the stream, or a writer resubmits bytes already sent.
+    nwriters = 4
+    nchunks = 64
+    chunklen(id) = id * 32 * 1024
+    total = sum(nchunks * chunklen(id) for id in 1:nwriters)
+
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    server_task = @async begin
+        received = Vector{UInt8}(undef, total)
+        read!(ssl, received)
+        received
+    end
+
+    writers = map(1:nwriters) do id
+        @async begin
+            chunk = fill(UInt8(id), chunklen(id))
+            for _ in 1:nchunks
+                write(client, chunk)
+            end
+        end
+    end
+    @test timedwait(() -> all(istaskdone, writers), 60.0) === :ok
+    @test !any(istaskfailed, writers)
+    @test timedwait(() -> istaskdone(server_task), 60.0) === :ok
+    if istaskdone(server_task) && !istaskfailed(server_task)
+        received = fetch(server_task)
+        @test length(received) == total
+        # every writer's bytes all arrived, whatever the interleaving
+        for id in 1:nwriters
+            @test count(==(UInt8(id)), received) == nchunks * chunklen(id)
+        end
+    else
+        @test false
+    end
+    close(client)
+    close(ssl, false)
+    close(server)
 end
