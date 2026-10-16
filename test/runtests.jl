@@ -885,3 +885,65 @@ end
     close(server)
     rm(ca_file)
 end
+
+@testset "WriteCallbackFailure" begin
+    # The socket write inside the BIO callback fails (here: the socket is closed). The
+    # SSL call has to fail with it, rather than report the bytes written.
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    close(client.io)
+    err = @test_throws Base.IOError write(client, UInt8[1, 2, 3])
+    @test !isopen(client)
+    # the message carries OpenSSL's account of the failure, and nothing is left of it on
+    # the thread's error queue for an unrelated call to report
+    @test occursin("SSL_ERROR_SYSCALL", sprint(showerror, err.value))
+    @test ccall((:ERR_peek_error, OpenSSL.libcrypto), Culong, ()) == 0
+    close(ssl, false)
+    close(server)
+end
+
+@testset "RawWriteFailure" begin
+    # the same failure from a raw call on `ssl.ssl`: the callback's -1 fails the call
+    # with SSL_ERROR_SYSCALL
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    close(client.io)
+    payload = UInt8[1, 2, 3]
+    n = Ref{Csize_t}(0)
+    ret = Base.@lock client.lock GC.@preserve payload ccall(
+        (:SSL_write_ex, OpenSSL.libssl),
+        Cint,
+        (OpenSSL.SSL, Ptr{Cvoid}, Csize_t, Ptr{Csize_t}),
+        client.ssl, pointer(payload), length(payload), n)
+    @test ret == 0
+    @test OpenSSL.get_error(client.ssl, ret) == OpenSSL.SSL_ERROR_SYSCALL
+    # OpenSSL 3.2 and later also leave their account of it on the error queue
+    # (`tls_retry_write_records failure`), as for any failed raw call; older versions
+    # record nothing for a SYSCALL error. Either way the queue is the raw caller's to
+    # read or clear
+    if OpenSSL.version_number() >= v"3.2"
+        @test ccall((:ERR_peek_error, OpenSSL.libcrypto), Culong, ()) != 0
+    end
+    OpenSSL.clear_errors!()
+    close(client, false)
+    close(ssl, false)
+    close(server)
+end
+
+@testset "CloseAfterSocketGone" begin
+    # `close(ssl)` with the socket already gone: the close_notify write fails, which now
+    # fails SSL_shutdown; OpenSSL 3.2+ records that on the thread's error queue and
+    # `close` clears it, so an unrelated call later does not report it
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    close(client.io)
+    OpenSSL.clear_errors!()
+    close(client)
+    @test !isopen(client)
+    @test ccall((:ERR_peek_error, OpenSSL.libcrypto), Culong, ()) == 0
+    close(ssl, false)
+    close(server)
+end
