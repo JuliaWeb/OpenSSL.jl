@@ -55,8 +55,11 @@ function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
         written = unsafe_write(io, in, inlen)
         return Cint(written)
     catch e
-        # we don't want to throw a Julia exception from a C callback
-        return Cint(0)
+        # we don't want to throw a Julia exception from a C callback; -1 fails the
+        # SSL call. A 0 would not: with no retry flag set, OpenSSL (3.5 included)
+        # takes it as "nothing written yet", keeps the record pending and reports
+        # the call a success, so a write whose socket is gone would look written
+        return Cint(-1)
     end
 end
 
@@ -471,11 +474,16 @@ macro geterror(ssl, op, expr)
                     ret = SSL_ERROR_WANT_WRITE
                 else
                     # this is usually some other kind of error, like a protocol error
-                    # or OS-level IO error, just close the SSL connection and throw
+                    # or OS-level IO error (a failed socket write in the BIO callback
+                    # among them), just close the SSL connection and throw
                     # notably, the openssl docs say we should *not* call ssl_disconnect
-                    # in this case, hence the `false` arg to close
+                    # in this case, hence the `false` arg to close. OpenSSL's own account
+                    # of the error is on the thread's error queue: it goes into the
+                    # message rather than staying there for an unrelated call to report
+                    detail = strip(get_error())
                     close($ssl, false)
-                    throw(Base.IOError(OpenSSLError(err).msg, 0))
+                    msg = OpenSSLError(err).msg
+                    throw(Base.IOError(isempty(detail) ? msg : "$msg: $detail", 0))
                 end
             end
             ret
