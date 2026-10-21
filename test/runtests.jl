@@ -807,3 +807,81 @@ end
     @test OpenSSL.ssl_set_alpn(ctx, "\x03hé") === nothing
     @test OpenSSL.ssl_set_alpn(ctx, OpenSSL.UPDATE_HTTP2_ALPN) === nothing
 end
+
+@testset "DistrustedKeys" begin
+    fixtures = joinpath(@__DIR__, "emudhra")
+    pem_certs(pem) = [X509Certificate(m.match) for m in
+        eachmatch(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----"s, pem)]
+
+    intermediates = pem_certs(read(joinpath(fixtures, "intermediates.pem"), String))
+    expected = readlines(joinpath(fixtures, "spki-sha256.txt"))
+    @test length(intermediates) == length(expected) == 16
+    for (cert, hash) in zip(intermediates, expected)
+        spki = GC.@preserve cert OpenSSL.spki_sha256(cert.x509)
+        @test bytes2hex(spki) == hash
+        @test spki in OpenSSL.DISTRUSTED_SPKI_SHA256
+    end
+    leaf = first(pem_certs(read(joinpath(fixtures, "dv-g3b-emudhra.we-have-a-problem.com.pem"), String)))
+    @test (GC.@preserve leaf OpenSSL.spki_sha256(leaf.x509)) ∉ OpenSSL.DISTRUSTED_SPKI_SHA256
+
+    # A real handshake against a self-signed certificate that the client trusts. It must
+    # succeed, then fail once the certificate's key is distrusted.
+    evp_pkey = EvpPKey(rsa_generate_key())
+    cert = X509Certificate()
+    cert.public_key = evp_pkey
+    name = X509Name()
+    add_entry(name, "CN", "localhost")
+    cert.subject_name = name
+    cert.issuer_name = name
+    Dates.adjust(cert.time_not_before, Second(0))
+    Dates.adjust(cert.time_not_after, Year(1))
+    add_extension(cert, X509Extension("basicConstraints", "CA:TRUE"))
+    sign_certificate(cert, evp_pkey)
+    ca_file, io = mktemp()
+    write(io, cert)
+    close(io)
+
+    port, server = listenany(Sockets.localhost, 0)
+    server_task = @async begin
+        for _ in 1:2
+            sock = accept(server)
+            ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod())
+            OpenSSL.ssl_use_certificate(ctx, cert)
+            OpenSSL.ssl_use_private_key(ctx, evp_pkey)
+            ssl = SSLStream(ctx, sock)
+            try
+                # `OpenSSL.accept` does not wait when the handshake needs more data.
+                while (ret = ccall((:SSL_accept, OpenSSL.libssl), Cint, (OpenSSL.SSL,), ssl.ssl)) != 1
+                    OpenSSL.get_error(ssl.ssl, ret) == OpenSSL.SSL_ERROR_WANT_READ || break
+                    eof(sock) && break
+                end
+                eof(ssl)
+            catch
+            finally
+                close(sock)
+            end
+        end
+    end
+    function client_connect()
+        ssl = SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ca_file), connect(Sockets.localhost, port))
+        try
+            OpenSSL.connect(ssl; require_ssl_verification=true)
+        finally
+            close(ssl)
+        end
+    end
+
+    @test client_connect() === nothing
+    spki = GC.@preserve cert OpenSSL.spki_sha256(cert.x509)
+    push!(OpenSSL.DISTRUSTED_SPKI_SHA256, spki)
+    try
+        err = @catch_exception_object client_connect()
+        @test err isa OpenSSL.OpenSSLError
+        @test occursin("distrusted public key", err.msg)
+    finally
+        delete!(OpenSSL.DISTRUSTED_SPKI_SHA256, spki)
+    end
+    wait(server_task)
+    close(server)
+    rm(ca_file)
+end
