@@ -789,3 +789,21 @@ end
     close(ssl)
     close(server)
 end
+
+@testset "AcceptAfterClose" begin
+    # `close` frees the SSL object, so `accept` on a closed stream has to stop before it
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client = Sockets.connect(ip"127.0.0.1", port)
+    ssl = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSServerMethod(), ""), accept(server))
+    close(ssl)
+    @test_throws Base.IOError Sockets.accept(ssl)
+    close(client)
+    close(server)
+end
+
+@testset "ALPNByteLength" begin
+    # the protocol list's length goes to OpenSSL in bytes: "\x03hé" is one 3-byte protocol
+    ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), "")
+    @test OpenSSL.ssl_set_alpn(ctx, "\x03hé") === nothing
+    @test OpenSSL.ssl_set_alpn(ctx, OpenSSL.UPDATE_HTTP2_ALPN) === nothing
+end
