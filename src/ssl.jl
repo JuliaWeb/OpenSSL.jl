@@ -419,7 +419,9 @@ mutable struct SSLStream <: IO
         bio_write::BIO = BIO(io; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
         x = new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false)
-        finalizer(close, x)
+        # no close_notify from the finalizer: sending it is a socket write, which can
+        # wait for the peer, and a finalizer may not switch tasks
+        finalizer(x -> close(x, false), x)
         return x
     end
 end
