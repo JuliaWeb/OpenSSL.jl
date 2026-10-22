@@ -947,3 +947,47 @@ end
     close(ssl, false)
     close(server)
 end
+
+@testset "ConcurrentWriters" begin
+    # Several tasks writing to one stream, each with its own chunk size: the byte count
+    # `SSL_write_ex` reports has to be the one of this task's call, not of whichever
+    # task ran last on the stream, or a writer resubmits bytes already sent.
+    nwriters = 4
+    nchunks = 64
+    chunklen(id) = id * 32 * 1024
+    total = sum(nchunks * chunklen(id) for id in 1:nwriters)
+
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    server_task = @async begin
+        received = Vector{UInt8}(undef, total)
+        read!(ssl, received)
+        received
+    end
+
+    writers = map(1:nwriters) do id
+        @async begin
+            chunk = fill(UInt8(id), chunklen(id))
+            for _ in 1:nchunks
+                write(client, chunk)
+            end
+        end
+    end
+    @test timedwait(() -> all(istaskdone, writers), 60.0) === :ok
+    @test !any(istaskfailed, writers)
+    @test timedwait(() -> istaskdone(server_task), 60.0) === :ok
+    if istaskdone(server_task) && !istaskfailed(server_task)
+        received = fetch(server_task)
+        @test length(received) == total
+        # every writer's bytes all arrived, whatever the interleaving
+        for id in 1:nwriters
+            @test count(==(UInt8(id)), received) == nchunks * chunklen(id)
+        end
+    else
+        @test false
+    end
+    close(client)
+    close(ssl, false)
+    close(server)
+end

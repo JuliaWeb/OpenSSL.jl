@@ -411,6 +411,8 @@ mutable struct SSLStream <: IO
     # call `read` or `write` at the same time as per the thread in
     # https://mailing.openssl.users.narkive.com/HeNGlNAJ/openssl-and-multithreaded-programs
     lock::ReentrantLock
+    # unused by this package, where each call has its own counts; kept because code
+    # outside it reads them
     readbytes::Base.RefValue{Csize_t}
     writebytes::Base.RefValue{Csize_t}
     peekbuf::Base.RefValue{UInt8}
@@ -494,6 +496,9 @@ end
 
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
     nwritten = 0
+    # per call, not per stream: the count is read back after `@geterror` released
+    # `ssl.lock`, and another task's `SSL_write_ex` could overwrite a shared one first
+    writebytes = Ref{Csize_t}(0)
     while nwritten < in_length
         ret = @geterror ssl :unsafe_write ccall(
             (:SSL_write_ex, libssl),
@@ -502,10 +507,10 @@ function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UIn
             ssl.ssl,
             in_buffer,
             in_length,
-            ssl.writebytes
+            writebytes
         )
         if ret == SSL_ERROR_NONE
-            nwritten += ssl.writebytes[]
+            nwritten += writebytes[]
         elseif ret == SSL_ERROR_WANT_WRITE
             flush(ssl.io)
         elseif ret == SSL_ERROR_WANT_READ
@@ -671,7 +676,8 @@ end
 """
 function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
     nread = 0
-    readbytes = ssl.readbytes
+    # per call, see `unsafe_write`
+    readbytes = Ref{Csize_t}(0)
     while nread < nbytes
         ret = @geterror ssl :unsafe_read ccall(
             (:SSL_read_ex, libssl),
@@ -733,6 +739,9 @@ function Base.eof(ssl::SSLStream)::Bool
     # whether a round already found the socket at EOF: one more is allowed, in case a
     # concurrent read took the bytes that completed the record meanwhile
     atend = false
+    # per call, see `unsafe_write`
+    peekbuf = Ref{UInt8}(0x00)
+    peekbytes = Ref{Csize_t}(0)
     while isopen(ssl)
         # note that care needs to be taken here to avoid a potential bad
         # race condition; for SSLStream, we have to manage the state of
@@ -765,9 +774,9 @@ function Base.eof(ssl::SSLStream)::Bool
                 Cint,
                 (SSL, Ptr{UInt8}, Cint, Ptr{Csize_t}),
                 ssl.ssl,
-                ssl.peekbuf,
+                peekbuf,
                 1,
-                ssl.peekbytes
+                peekbytes
             )
             if ret == SSL_ERROR_NONE
                 return false
