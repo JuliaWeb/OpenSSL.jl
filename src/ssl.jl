@@ -223,13 +223,14 @@ end
     Configures TLS ALPN (Application-Layer Protocol Negotiation).
 """
 function ssl_set_alpn(ssl_context::SSLContext, protocol_list::String)
+    # passing the String itself keeps it alive during the call; the length is in bytes
     if ccall(
         (:SSL_CTX_set_alpn_protos, libssl),
         Cint,
         (SSLContext, Ptr{UInt8}, UInt32),
         ssl_context,
-        pointer(protocol_list),
-        length(protocol_list)) != 0
+        protocol_list,
+        sizeof(protocol_list)) != 0
         throw(OpenSSLError())
     end
 end
@@ -576,7 +577,11 @@ function hostname!(ssl::SSLStream, host)
 end
 
 function Sockets.accept(ssl::SSLStream)
-    ssl_accept(ssl.ssl)
+    # under `ssl.lock`, like every other call on `ssl.ssl`: `close` frees it
+    Base.@lock ssl.lock begin
+        ssl.closed && throwio(:accept)
+        ssl_accept(ssl.ssl)
+    end
 end
 
 """
