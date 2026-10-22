@@ -539,13 +539,17 @@ function spki_sha256(x509::Ptr{Cvoid})::Vector{UInt8}
         throw(OpenSSLError())
     end
     der = Vector{UInt8}(undef, len)
-    GC.@preserve der begin
+    written = GC.@preserve der begin
         ccall(
             (:i2d_X509_PUBKEY, libcrypto),
             Cint,
             (Ptr{Cvoid}, Ref{Ptr{UInt8}}),
             pubkey,
             pointer(der))
+    end
+    # A failed encoding leaves `der` uninitialized, and its hash would match no distrusted key.
+    if written != len
+        throw(OpenSSLError())
     end
     return digest(EvpSHA256(), IOBuffer(der))
 end
