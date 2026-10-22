@@ -643,6 +643,9 @@ end
 
 function Base.eof(ssl::SSLStream)::Bool
     bytesavailable(ssl) > 0 && return false
+    # whether a round already found the socket at EOF: one more is allowed, in case a
+    # concurrent read took the bytes that completed the record meanwhile
+    atend = false
     while isopen(ssl)
         # note that care needs to be taken here to avoid a potential bad
         # race condition; for SSLStream, we have to manage the state of
@@ -686,8 +689,17 @@ function Base.eof(ssl::SSLStream)::Bool
             elseif ret == SSL_ERROR_WANT_READ
                 # if we get WANT_READ back, that means there were pending bytes
                 # to be processed, but not a full record, so we need to wait
-                # for additional bytes to come in before we can process
-                eof(ssl.io)
+                # for additional bytes to come in before we can process. If the
+                # socket is at EOF they never will: the peer went away mid-record,
+                # so this is the end of the stream. Looping instead would spin:
+                # `haspending` stays true for the partial record and `eof(ssl.io)`
+                # returns at once, without ever yielding. One more round first: a
+                # concurrent read waiting on the socket ahead of this task may have
+                # taken the rest of the record, which `bytesavailable` then shows
+                if eof(ssl.io)
+                    atend && return true
+                    atend = true
+                end
             end
         end
     end

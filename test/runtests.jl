@@ -23,6 +23,51 @@ macro catch_exception_object(code)
     end
 end
 
+# A self-signed server context for tests that talk to themselves over 127.0.0.1.
+function selfsigned_server_ctx()
+    cert = X509Certificate()
+    key = EvpPKey(rsa_generate_key())
+    cert.public_key = key
+    name = X509Name()
+    add_entry(name, "CN", "localhost")
+    cert.subject_name = name
+    cert.issuer_name = name
+    Dates.adjust(cert.time_not_before, Second(0))
+    Dates.adjust(cert.time_not_after, Year(1))
+    sign_certificate(cert, key)
+    ctx = OpenSSL.SSLContext(OpenSSL.TLSServerMethod(), "")
+    OpenSSL.ssl_use_certificate(ctx, cert)
+    OpenSSL.ssl_use_private_key(ctx, key)
+    return ctx
+end
+
+# `accept(ssl)` runs one round of the handshake and throws `OpenSSLError` when it needs
+# more bytes from the peer; this waits for them and calls again until it completes.
+function accept_handshake(ssl)
+    while true
+        try
+            return Sockets.accept(ssl)
+        catch ex
+            ex isa OpenSSL.OpenSSLError || rethrow()
+            eof(ssl.io) && throw(EOFError())
+        end
+    end
+end
+
+# A connected client stream and the server stream at the other end.
+function connected_pair(server_ctx, server)
+    server_task = @async begin
+        ssl = OpenSSL.SSLStream(server_ctx, accept(server))
+        accept_handshake(ssl)
+        ssl
+    end
+    port = Sockets.getsockname(server)[2]
+    client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
+        Sockets.connect(ip"127.0.0.1", port))
+    Sockets.connect(client; require_ssl_verification=false)
+    return client, fetch(server_task)
+end
+
 # Verifies calling into OpenSSL library.
 @testset "OpenSSL" begin
     @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_create_ptr != C_NULL
@@ -685,4 +730,31 @@ end
 
     @test_throws ErrorException OpenSSL.SSLContext(ssl_method, "does_not_exist")
 
+end
+
+@testset "TruncatedRecordEOF" begin
+    # A peer that goes away in the middle of a record leaves a partial record buffered:
+    # `haspending` stays true, `SSL_peek_ex` keeps asking for more bytes, and the socket
+    # is at EOF. `eof` has to report the end of the stream rather than loop on that.
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    server_task = @async eof(ssl)
+    # keep taking whatever the server sends after the handshake (session tickets) off
+    # the socket, so that closing it sends a FIN rather than a RST
+    drain = @async while isopen(client.io)
+        readavailable(client.io)
+    end
+    sleep(0.5)
+    # a record header announcing 100 bytes, followed by only 3 of them, then close
+    write(client.io, UInt8[0x17, 0x03, 0x03, 0x00, 0x64, 0xaa, 0xbb, 0xcc])
+    close(client.io)
+    @test timedwait(() -> istaskdone(drain), 5.0) === :ok
+    # the spin never yields, so on one thread a hang here starves this task too: a
+    # task that does not finish is reported by the timeout, a spinning one by CI
+    @test timedwait(() -> istaskdone(server_task), 30.0) === :ok
+    @test istaskdone(server_task) && fetch(server_task) === true
+    close(client, false)
+    close(ssl)
+    close(server)
 end
