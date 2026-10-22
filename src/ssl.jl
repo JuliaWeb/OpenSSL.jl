@@ -411,7 +411,7 @@ mutable struct SSLStream <: IO
     # call `read` or `write` at the same time as per the thread in
     # https://mailing.openssl.users.narkive.com/HeNGlNAJ/openssl-and-multithreaded-programs
     lock::ReentrantLock
-    # no longer used by this package, each call has its own; kept because code
+    # unused by this package, where each call has its own counts; kept because code
     # outside it reads them
     readbytes::Base.RefValue{Csize_t}
     writebytes::Base.RefValue{Csize_t}
