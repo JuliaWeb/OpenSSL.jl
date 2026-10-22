@@ -933,7 +933,7 @@ end
 end
 
 @testset "CloseAfterSocketGone" begin
-    # `close(ssl)` with the socket already gone: the close_notify write fails, which now
+    # `close(ssl)` with the socket already gone: the close_notify write fails, which
     # fails SSL_shutdown; OpenSSL 3.2+ records that on the thread's error queue and
     # `close` clears it, so an unrelated call later does not report it
     server_ctx = selfsigned_server_ctx()
