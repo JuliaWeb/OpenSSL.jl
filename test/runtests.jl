@@ -519,6 +519,37 @@ end
     end
 end
 
+@testset "CipherKeyAndIVLengths" begin
+    function encrypt_bytes(evp_cipher, key, iv, data)
+        ctx = EvpCipherContext()
+        encrypt_init(ctx, evp_cipher, key, iv)
+        return vcat(OpenSSL.cipher_update(ctx, data), OpenSSL.cipher_final(ctx))
+    end
+    key = random_bytes(16)
+    # an IV shorter than the cipher's is rejected rather than read past its end
+    @test_throws ArgumentError encrypt_init(EvpCipherContext(), EvpAES128CBC(), key, UInt8[1])
+    @test_throws ArgumentError decrypt_init(EvpCipherContext(), EvpAES128CBC(), key, UInt8[1])
+    # a cipher with a fixed key length rejects another one
+    @test_throws OpenSSL.OpenSSLError encrypt_init(EvpCipherContext(), EvpAES128CBC(), key[1:8], zeros(UInt8, 16))
+    # Blowfish takes keys of other lengths, and uses all of their bytes. On OpenSSL 3 it
+    # needs the legacy provider, which Julia's own OpenSSL build may not ship.
+    blowfish = OpenSSL.version_number() < v"3" || try
+        OpenSSL.load_provider("default")
+        OpenSSL.load_legacy_provider()
+        true
+    catch
+        false
+    end
+    if blowfish
+        # Eric Young's test vector: key FFFFFFFFFFFFFFFF, plaintext FFFFFFFFFFFFFFFF
+        @test bytes2hex(encrypt_bytes(EvpBlowFishECB(), fill(0xff, 8), UInt8[], fill(0xff, 8))[1:8]) ==
+              "51866fd5b85ecb8a"
+        long_key = collect(UInt8, 1:32)
+        @test encrypt_bytes(EvpBlowFishCBC(), long_key, zeros(UInt8, 8), Vector{UInt8}("16 byte message!")) !=
+              encrypt_bytes(EvpBlowFishCBC(), long_key[1:16], zeros(UInt8, 8), Vector{UInt8}("16 byte message!"))
+    end
+end
+
 @testset "StackOf{X509Extension}" begin
     ext1 = X509Extension("subjectAltName", "DNS:openssl.jl.com")
     ext2 = X509Extension("keyUsage", "digitalSignature, keyEncipherment, keyAgreement")
