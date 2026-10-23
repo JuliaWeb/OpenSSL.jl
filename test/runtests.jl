@@ -68,6 +68,85 @@ function connected_pair(server_ctx, server)
     return client, fetch(server_task)
 end
 
+# A finished task's value, or the exception it failed with (not the TaskFailedException
+# `fetch` wraps it in), for the caller to assert on.
+taskoutcome(task) = istaskfailed(task) ? task.result : fetch(task)
+
+# `task`'s outcome should it finish within `timeout`, else `placeholder`; nothing waits
+# on a task that stalled.
+boundedfetch(task, placeholder; timeout=30.0) =
+    timedwait(() -> istaskdone(task), timeout) === :ok ? taskoutcome(task) : placeholder
+
+# Bytes handed to libuv that have not left for the kernel yet.
+function writequeuesize(io::TCPSocket)
+    Base.iolock_begin()
+    try
+        io.handle == C_NULL && return 0
+        return Int(ccall(:uv_stream_get_write_queue_size, Csize_t, (Ptr{Cvoid},), io.handle))
+    finally
+        Base.iolock_end()
+    end
+end
+
+# Writes to `io` (the stream, or its socket for a raw write) until the peer's receive
+# window is full and the writer parks on the socket; returns the task and the count of
+# completed writes. Each write is many times what goes
+# to OpenSSL in one call, and more than the kernel's send and receive buffers grow to
+# (Windows and macOS keep growing them for a peer that does not read): a parked write
+# that the buffers could still take would complete of itself.
+const PARK_CHUNK = max(32 * 2^20, 3 * Int(OpenSSL.SSL_WRITE_CHUNK))
+function park_writer(client, stop_writing; io=client)
+    written = Threads.Atomic{Int}(0)
+    chunk = zeros(UInt8, PARK_CHUNK)
+    writer = @async try
+        while !stop_writing[]
+            write(io, chunk)
+            Threads.atomic_add!(written, length(chunk))
+        end
+        nothing
+    catch ex
+        ex
+    end
+    # parked means: bytes in libuv that have not left for the kernel, the same amount
+    # half a second later, and no write completed meanwhile
+    parked = timedwait(60.0; pollint=0.5) do
+        before = (written[], writequeuesize(client.io))
+        sleep(0.5)
+        !istaskdone(writer) && before[2] > 0 && (written[], writequeuesize(client.io)) == before
+    end
+    if parked !== :ok
+        outcome = istaskdone(writer) ? fetch(writer) : "still writing"
+        close(client, false)
+        error("the writer did not park on the socket: $outcome")
+    end
+    return writer, written
+end
+
+# Whether every run of one writer's byte in `received` is whole writes of that writer long.
+function wholewrites(received, chunklen)
+    i = 1
+    while i <= length(received)
+        j = i
+        while j <= length(received) && received[j] == received[i]
+            j += 1
+        end
+        (j - i) % chunklen(Int(received[i])) == 0 || return false
+        i = j
+    end
+    return true
+end
+
+# A client stream connecting to `port` on a task, for a server that drives its side of
+# the handshake itself.
+function connecting(port)
+    @async begin
+        client = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""),
+            Sockets.connect(ip"127.0.0.1", port))
+        Sockets.connect(client; require_ssl_verification=false)
+        client
+    end
+end
+
 # Verifies calling into OpenSSL library.
 @testset "OpenSSL" begin
     @test OpenSSL.BIO_STREAM_CALLBACKS.x.on_bio_create_ptr != C_NULL
@@ -895,9 +974,9 @@ end
     close(client.io)
     err = @test_throws Base.IOError write(client, UInt8[1, 2, 3])
     @test !isopen(client)
-    # the message carries OpenSSL's account of the failure, and nothing is left of it on
-    # the thread's error queue for an unrelated call to report
-    @test occursin("SSL_ERROR_SYSCALL", sprint(showerror, err.value))
+    # the failure is the socket write's own, made after the SSL call: `write` reports it
+    # and nothing is left on the thread's error queue for an unrelated call to report
+    @test occursin("closed", sprint(showerror, err.value))
     @test ccall((:ERR_peek_error, OpenSSL.libcrypto), Culong, ()) == 0
     close(ssl, false)
     close(server)
@@ -951,10 +1030,11 @@ end
 @testset "ConcurrentWriters" begin
     # Several tasks writing to one stream, each with its own chunk size: the byte count
     # `SSL_write_ex` reports has to be the one of this task's call, not of whichever
-    # task ran last on the stream, or a writer resubmits bytes already sent.
+    # task ran last on the stream, or a writer resubmits bytes already sent. Every size
+    # is more than what goes to OpenSSL in one call: a write still arrives in one piece.
     nwriters = 4
-    nchunks = 64
-    chunklen(id) = id * 32 * 1024
+    nchunks = 16
+    chunklen(id) = Int(OpenSSL.SSL_WRITE_CHUNK) + id * 32 * 1024
     total = sum(nchunks * chunklen(id) for id in 1:nwriters)
 
     server_ctx = selfsigned_server_ctx()
@@ -984,10 +1064,437 @@ end
         for id in 1:nwriters
             @test count(==(UInt8(id)), received) == nchunks * chunklen(id)
         end
+        # and each write in one piece: a run of one writer's byte is whole writes long
+        @test wholewrites(received, chunklen)
     else
         @test false
     end
     close(client)
+    close(ssl, false)
+    close(server)
+end
+
+@testset "ConcurrentReadWrite" begin
+    # A write that is waiting for the peer must not stop reads on the same stream:
+    # `SSL_write_ex` and `SSL_read_ex` share `ssl.lock`, so the socket write the write
+    # BIO does has to happen outside it (#72).
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    payload = collect(0x01:0x40)
+    write(ssl, payload)
+    # and from here on the server reads nothing, so the client's write parks
+
+    stop_writing = Threads.Atomic{Bool}(false)
+    writer, _ = park_writer(client, stop_writing)
+    # the write waits for the socket without holding the lock reads need
+    @test timedwait(() -> !islocked(client.lock), 5.0) === :ok
+
+    buff = Vector{UInt8}(undef, length(payload))
+    reader = @async read!(client, buff)
+    @test boundedfetch(reader, :stalled) == payload
+
+    # the client still has megabytes parked against a peer that is not reading: its
+    # close cuts that write off, which fails the writer. On a task: should the close
+    # wait for that write (as it did before this fix) the test fails, not the suite
+    stop_writing[] = true
+    closer = @async close(client)
+    @test timedwait(() -> istaskdone(closer), 30.0) === :ok
+    istaskdone(closer) || OpenSSL.forceclose!(client.io)
+    @test timedwait(() -> istaskdone(writer), 30.0) === :ok
+    @test istaskdone(writer) && fetch(writer) isa Base.IOError
+    close(ssl, false)
+    close(server)
+end
+
+@testset "FullDuplex" begin
+    # Both ends write more than the socket buffers hold while reading what the other
+    # writes: with the socket write under `ssl.lock` both writers park and neither reader
+    # can run, so nothing finishes.
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    n = 8 * 2^20
+    c2s = rand(UInt8, n)
+    s2c = rand(UInt8, n)
+    tasks = [
+        @async(write(client, c2s)),
+        @async(write(ssl, s2c)),
+        @async(read!(client, Vector{UInt8}(undef, n))),
+        @async(read!(ssl, Vector{UInt8}(undef, n))),
+    ]
+    done = timedwait(() -> all(istaskdone, tasks), 120.0) === :ok
+    @test done
+    if done
+        @test !any(istaskfailed, tasks)
+        @test fetch(tasks[3]) == s2c
+        @test fetch(tasks[4]) == c2s
+    else
+        # release what stalled rather than leave it to outlast the testset
+        OpenSSL.forceclose!(client.io)
+        OpenSSL.forceclose!(ssl.io)
+    end
+    close(client)
+    close(ssl)
+    close(server)
+end
+
+@testset "CloseWithParkedWriter" begin
+    # `close` while a write is parked on a peer that stopped reading: the close does not
+    # wait for that write, which could be forever; it closes the socket outright, which
+    # fails the writer.
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    stop_writing = Threads.Atomic{Bool}(false)
+    writer, written = park_writer(client, stop_writing)
+    stop_writing[] = true
+    t0 = time()
+    close(client)
+    @test time() - t0 < 5.0
+    @test !isopen(client)
+    @test timedwait(() -> istaskdone(writer), 30.0) === :ok
+    @test istaskdone(writer) && fetch(writer) isa Base.IOError
+    # the server reaches the end of the stream, however much of the write got through
+    reader = @async try
+        while !eof(ssl)
+            readavailable(ssl)
+        end
+        :eof
+    catch ex
+        ex
+    end
+    outcome = boundedfetch(reader, :stalled)
+    @test outcome !== :stalled
+    outcome === :stalled && OpenSSL.forceclose!(ssl.io)
+    close(ssl, false)
+    close(server)
+end
+
+@testset "CloseRacingWriter" begin
+    # a write whose socket write completed just as `close` ran: the writer returns
+    # success, since its bytes did reach the socket, and the peer reads them all
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    # one read on the client first, so that the server's session tickets do not sit
+    # unread in its socket: closing a socket with unread data resets the connection,
+    # and on Windows the reset discards what the peer has not read yet
+    write(ssl, UInt8[0x01])
+    @test read!(client, Vector{UInt8}(undef, 1)) == UInt8[0x01]
+    payload = rand(UInt8, 1000)
+    writer = @async try
+        write(client, payload)
+        :ok
+    catch ex
+        ex
+    end
+    closer = @async close(client)
+    @test boundedfetch(writer, :stalled) === :ok
+    @test boundedfetch(closer, :stalled) === nothing
+    reader = @async read!(ssl, Vector{UInt8}(undef, length(payload)))
+    @test boundedfetch(reader, :stalled) == payload
+    close(ssl, false)
+    close(server)
+end
+
+@testset "CloseBehindRawWrite" begin
+    # `close` with the socket's send buffer full of a raw write (one not made through the
+    # stream, so nothing is in flight for `close` to cut): the close_notify's socket
+    # write would park behind it forever, so after a grace period the socket is closed
+    # outright, and the stream's `sendlock` is released
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    # written until it parks: one write, however large, may not (Windows takes a whole
+    # 64 MiB with no reader)
+    stop_writing = Threads.Atomic{Bool}(false)
+    raw, _ = park_writer(client, stop_writing; io=client.io)
+    stop_writing[] = true
+    t0 = time()
+    close(client)
+    @test time() - t0 < 1.0
+    @test timedwait(() -> istaskdone(raw), OpenSSL.CLOSE_NOTIFY_GRACE + 30.0) === :ok
+    @test timedwait(() -> !isopen(client.io), 30.0) === :ok
+    @test timedwait(() -> !islocked(client.sendlock), 30.0) === :ok
+    close(ssl, false)
+    close(server)
+end
+
+@testset "CloseBehindRawWriteNoShutdown" begin
+    # the same, for a close that makes no close_notify (`close(ssl, false)`, which the
+    # failed-call path and the finalizer use): nothing is buffered to send, but Base's
+    # own socket close waits behind the parked write, so that too is bounded
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    stop_writing = Threads.Atomic{Bool}(false)
+    raw, _ = park_writer(client, stop_writing; io=client.io)
+    stop_writing[] = true
+    t0 = time()
+    close(client, false)
+    @test time() - t0 < 1.0
+    @test timedwait(() -> istaskdone(raw), OpenSSL.CLOSE_NOTIFY_GRACE + 30.0) === :ok
+    @test timedwait(() -> !isopen(client.io), 30.0) === :ok
+    @test timedwait(() -> !islocked(client.sendlock), 30.0) === :ok
+    close(ssl, false)
+    close(server)
+end
+
+@testset "CloseNotifyEOF" begin
+    # the peer's close_notify, sent by `close`, surfaces from `eof` as the "unexpected
+    # EOF" `IOError` and closes the stream; and it follows the writes made before the
+    # close, which the peer reads first
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    # the client reads too, which takes the server's session tickets off its socket:
+    # closed with them unread, the kernel may reset the connection rather than end it
+    # (Windows does), and the peer lose the close_notify to the reset
+    client_reader = @async try
+        while !eof(client)
+            readavailable(client)
+        end
+    catch
+    end
+    payload = rand(UInt8, 100_000)
+    write(client, payload)
+    sleep(0.2)
+    close(client)
+    reader = @async begin
+        received = read!(ssl, Vector{UInt8}(undef, length(payload)))
+        err = try
+            eof(ssl)
+            nothing
+        catch ex
+            ex
+        end
+        (received, err)
+    end
+    outcome = boundedfetch(reader, :stalled)
+    @test outcome !== :stalled
+    if outcome !== :stalled
+        received, err = outcome
+        @test received == payload
+        @test err isa Base.IOError
+        @test occursin("unexpected EOF", sprint(showerror, err))
+        @test !isopen(ssl)
+    else
+        OpenSSL.forceclose!(ssl.io)
+    end
+    @test timedwait(() -> istaskdone(client_reader), 30.0) === :ok
+    close(ssl)
+    close(server)
+end
+
+@testset "WriteSizes" begin
+    # the peer reads every write whole and in order, across sizes around a record's and
+    # a write of many records
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    payloads = [rand(UInt8, n) for n in (1, 100, 16383, 16384, 16385, 50_000, 2^20 + 7, 3)]
+    expected = reduce(vcat, payloads)
+    reader = @async read!(ssl, Vector{UInt8}(undef, length(expected)))
+    for payload in payloads
+        write(client, payload)
+    end
+    @test boundedfetch(reader, :stalled) == expected
+    # nothing left buffered, and nothing kept
+    @test isempty(client.data.buf)
+    close(client)
+    close(ssl)
+    close(server)
+end
+
+@testset "ReplyBehindSender" begin
+    # a reply a read produced goes out from a task when `sendlock` is free; when a sender
+    # holds the lock, that sender sends it before releasing the lock, so it is not lost
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    # the server's socket read raw: what the client's write BIO sent, as it is
+    marker1 = rand(UInt8, 16)
+    marker2 = rand(UInt8, 16)
+    # the lock is free: the reply task sends
+    got1 = @async read(ssl.io, 16)
+    Base.@lock client.lock append!(client.data.buf, marker1)
+    OpenSSL.sendreply!(client)
+    @test boundedfetch(got1, :stalled) == marker1
+    # the lock is taken: the reply task leaves the reply to the holder
+    got2 = @async read(ssl.io, 16)
+    lock(client.sendlock)
+    Base.@lock client.lock append!(client.data.buf, marker2)
+    OpenSSL.sendreply!(client)
+    sleep(0.3)
+    @test !istaskdone(got2)
+    @test !isempty(client.data.buf)
+    # what every holder does before releasing the lock
+    OpenSSL.drainlocked!(client)
+    @test !islocked(client.sendlock)
+    @test boundedfetch(got2, :stalled) == marker2
+    close(client, false)
+    close(ssl, false)
+    close(server)
+end
+
+@testset "LegacyAccept" begin
+    # `accept` keeps its contract: one round, which does not wait for the peer, so the
+    # deadline a loop checks between calls holds against a peer that stays silent
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    silent = Sockets.connect(ip"127.0.0.1", port)
+    ssl = OpenSSL.SSLStream(server_ctx, accept(server))
+    # the loop written to `accept`'s contract: one round per call, `OpenSSLError` when
+    # it needs more bytes, the wait for them and the deadline between calls
+    function acceptloop(ssl, deadline)
+        rounds = 0
+        while true
+            try
+                Sockets.accept(ssl)
+                return :ok, rounds
+            catch ex
+                ex isa OpenSSL.OpenSSLError || rethrow()
+                rounds += 1
+                time() < deadline || return :deadline_expired, rounds
+                arrival = @async eof(ssl.io)
+                timedwait(() -> istaskdone(arrival), max(deadline - time(), 0.01))
+            end
+        end
+    end
+    outcome, rounds = acceptloop(ssl, time() + 0.5)
+    @test outcome === :deadline_expired
+    @test rounds >= 1
+    # nothing failed: the loop could have gone on
+    @test isopen(ssl)
+    # no close_notify from a handshake in progress, which would queue an error
+    close(ssl, false)
+    close(silent)
+    close(server)
+end
+
+@testset "RawSSLCalls" begin
+    # a call made on `ssl.ssl` from outside the package writes to the socket from the
+    # write BIO callback itself, as before: an `SSL_accept` loop of a caller's own (under
+    # `ssl.lock`, as TLSStreams runs it) completes the handshake, and a raw write lands
+    # whole among the records of a parked write, nothing lost
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client_task = connecting(port)
+    ssl = OpenSSL.SSLStream(server_ctx, accept(server))
+    deadline = time() + 30.0
+    while true
+        done = Base.@lock ssl.lock begin
+            try
+                OpenSSL.ssl_accept(ssl.ssl)
+                true
+            catch ex
+                ex isa OpenSSL.OpenSSLError || rethrow()
+                false
+            end
+        end
+        done && break
+        time() < deadline || error("the raw accept loop did not finish")
+        eof(ssl.io) && error("the peer went away during the raw accept loop")
+    end
+    client = fetch(client_task)
+    write(client, UInt8[1, 2, 3])
+    @test read!(ssl, Vector{UInt8}(undef, 3)) == UInt8[1, 2, 3]
+
+    # the server reads nothing for now, so the client's writer parks; a raw write on the
+    # client then goes straight to the socket, behind the record in libuv
+    stop_writing = Threads.Atomic{Bool}(false)
+    parked_writer, written = park_writer(client, stop_writing)
+    stop_writing[] = true
+    nzeros = written[] + PARK_CHUNK
+    marker = fill(UInt8(7), 100)
+    raw = @async Base.@lock client.lock begin
+        n = Ref{Csize_t}(0)
+        r = GC.@preserve marker ccall(
+            (:SSL_write_ex, OpenSSL.libssl),
+            Cint,
+            (OpenSSL.SSL, Ptr{Cvoid}, Csize_t, Ptr{Csize_t}),
+            client.ssl, pointer(marker), length(marker), n)
+        (r, Int(n[]))
+    end
+    reader = @async read!(ssl, Vector{UInt8}(undef, nzeros + length(marker)))
+    received = boundedfetch(reader, :stalled; timeout=60.0)
+    @test received isa Vector{UInt8}
+    if received isa Vector{UInt8}
+        @test count(==(0), received) == nzeros
+        sevens = findall(==(7), received)
+        @test length(sevens) == length(marker)
+        # in one piece
+        @test !isempty(sevens) && sevens == sevens[1]:sevens[1] + length(marker) - 1
+    else
+        OpenSSL.forceclose!(client.io)
+    end
+    @test boundedfetch(raw, :stalled) == (1, 100)
+    @test boundedfetch(parked_writer, :stalled) === nothing
+    close(client)
+    close(ssl)
+    close(server)
+end
+
+@testset "PeerResetMidRecord" begin
+    # a peer that resets the connection mid-record: `eof` reports the error or the end
+    # of the stream, and so does the next `eof`, rather than hang
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    reader = @async try
+        eof(ssl)
+    catch ex
+        ex
+    end
+    # a partial record, then a close with the session tickets the server sent still
+    # unread, which makes the kernel reset the connection rather than end it
+    sleep(0.2)
+    write(client.io, UInt8[0x17, 0x03, 0x03, 0x00, 0x64, 0xaa, 0xbb, 0xcc])
+    close(client.io)
+    outcome = boundedfetch(reader, :stalled)
+    @test outcome isa Base.IOError || outcome === true
+    outcome === :stalled && OpenSSL.forceclose!(ssl.io)
+    again = @async try
+        eof(ssl)
+    catch ex
+        ex
+    end
+    outcome = boundedfetch(again, :stalled)
+    @test outcome isa Base.IOError || outcome === true
+    outcome === :stalled && OpenSSL.forceclose!(ssl.io)
+    close(client, false)
+    close(ssl, false)
+    close(server)
+end
+
+@testset "FatalAlertReachesPeer" begin
+    # a forged record fails the server's read; the alert OpenSSL produces while failing
+    # is buffered, since the call runs under `ssl.lock`, and the `close` that the failure
+    # makes sends it, so the peer learns why instead of seeing a clean end of stream
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    forged = UInt8[0x17, 0x03, 0x03, 0x00, 0x20]
+    append!(forged, rand(UInt8, 0x20))
+    write(client.io, forged)
+    server_read = @async try
+        eof(ssl)
+    catch ex
+        ex
+    end
+    outcome = boundedfetch(server_read, :stalled)
+    @test outcome isa Base.IOError
+    @test !isopen(ssl)
+    client_read = @async try
+        eof(client)
+    catch ex
+        ex
+    end
+    outcome = boundedfetch(client_read, :stalled)
+    @test outcome isa Base.IOError
+    @test outcome isa Base.IOError && occursin("alert", outcome.msg)
+    close(client, false)
     close(ssl, false)
     close(server)
 end
