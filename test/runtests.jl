@@ -671,6 +671,22 @@ end
     free(_evp_pkey)
 end
 
+
+@testset "SerializePublicKey" begin
+	evp_pkey = EvpPKey(rsa_generate_key())
+
+    io = IOBuffer()
+    n = OpenSSL.write_pubkey(io, evp_pkey)
+    pubkey_pem = String(take!(io))
+    @test n == sizeof(pubkey_pem)
+
+    @test startswith(pubkey_pem, "-----BEGIN PUBLIC KEY-----")
+
+    _evp_pkey = OpenSSL.read_pubkey(pubkey_pem)
+
+    @test _evp_pkey == evp_pkey
+end
+
 @testset "DSA" begin
     evp_pkey = EvpPKey(dsa_generate_key())
     @test occursin("priv:", String(evp_pkey))
