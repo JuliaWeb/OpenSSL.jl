@@ -671,9 +671,8 @@ end
     free(_evp_pkey)
 end
 
-
 @testset "SerializePublicKey" begin
-	evp_pkey = EvpPKey(rsa_generate_key())
+    evp_pkey = EvpPKey(rsa_generate_key())
 
     io = IOBuffer()
     n = OpenSSL.write_pubkey(io, evp_pkey)
