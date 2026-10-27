@@ -2,7 +2,7 @@ using Dates
 using OpenSSL
 using Sockets
 
-function test_server(handshake_ready::Threads.Condition)
+function test_server(handshake_ready::Threads.Event)
     x509_certificate = X509Certificate()
 
     evp_pkey = EvpPKey(rsa_generate_key())
@@ -22,7 +22,7 @@ function test_server(handshake_ready::Threads.Condition)
     sign_certificate(x509_certificate, evp_pkey)
 
     server_socket = listen(5000)
-    @lock handshake_ready notify(handshake_ready)
+    notify(handshake_ready)
     try
         accepted_socket = accept(server_socket)
 
@@ -36,7 +36,16 @@ function test_server(handshake_ready::Threads.Condition)
 
         ssl = SSLStream(ssl_ctx, accepted_socket)
 
-        OpenSSL.accept(ssl)
+        # `accept` runs one round of the handshake and throws when it needs more bytes
+        while true
+            try
+                OpenSSL.accept(ssl)
+                break
+            catch ex
+                ex isa OpenSSL.OpenSSLError || rethrow()
+                eof(ssl.io) && throw(EOFError())
+            end
+        end
 
         @test !eof(ssl)
         request = readavailable(ssl)
@@ -60,8 +69,8 @@ function test_server(handshake_ready::Threads.Condition)
     return nothing
 end
 
-function test_client(handshake_ready::Threads.Condition)
-    @lock handshake_ready wait(handshake_ready)
+function test_client(handshake_ready::Threads.Event)
+    wait(handshake_ready)
     tcp_stream = connect(5000)
 
     ssl_ctx = OpenSSL.SSLContext(OpenSSL.TLSClientMethod())
@@ -70,8 +79,8 @@ function test_client(handshake_ready::Threads.Condition)
     # Create SSL stream.
     ssl = SSLStream(ssl_ctx, tcp_stream)
 
-    #TODO expose connect
-    OpenSSL.connect(ssl)
+    # the server's certificate is self-signed
+    OpenSSL.connect(ssl; require_ssl_verification=false)
 
     # Verify the server certificate.
     x509_server_cert = OpenSSL.get_peer_certificate(ssl)
