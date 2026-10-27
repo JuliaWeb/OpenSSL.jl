@@ -2010,25 +2010,37 @@ function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C
     end
 end
 
-function write_pubkey(io::IO, evp_pkey::EvpPKey)
-	bio = BIO(BIOMethodMemory())
+"""
+    OpenSSL.write_pubkey(io::IO, evp_pkey::EvpPKey) -> Int
 
-	GC.@preserve bio begin
-		if ccall(
-			(:PEM_write_bio_PUBKEY, libcrypto),
-			Cint,
-			(BIO, EvpPKey),
-			bio,
-			evp_pkey) != 1
-			throw(OpenSSLError())
-		end
-		return write(io, bio_get_mem_data(bio))
-	end
+Write the public key of `evp_pkey` to `io` in PEM format (`-----BEGIN PUBLIC KEY-----`)
+and return the number of bytes written. For a private key, only its public part is written.
+"""
+function write_pubkey(io::IO, evp_pkey::EvpPKey)
+    bio = BIO(BIOMethodMemory())
+
+    GC.@preserve bio begin
+        if ccall(
+            (:PEM_write_bio_PUBKEY, libcrypto),
+            Cint,
+            (BIO, EvpPKey),
+            bio,
+            evp_pkey) != 1
+            throw(OpenSSLError())
+        end
+        return write(io, bio_get_mem_data(bio))
+    end
 end
 
-function read_pubkey(in_string::AbstractString)::EvpPKey
+"""
+    OpenSSL.read_pubkey(pem::AbstractString) -> EvpPKey
+
+Read a public key from a PEM string in the format `write_pubkey` writes
+(`-----BEGIN PUBLIC KEY-----`). Throws `OpenSSLError` if `pem` holds no such key.
+"""
+function read_pubkey(pem::AbstractString)::EvpPKey
     bio = BIO(BIOMethodMemory())
-    write(bio, in_string)
+    write(bio, pem)
 
     evp_pkey = ccall(
         (:PEM_read_bio_PUBKEY, libcrypto),
