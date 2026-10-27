@@ -731,12 +731,15 @@ end
 end
 
 @testset "SSLServer" begin
-    server_ready = Threads.Condition()
+    server_ready = Threads.Event()
     server_task = @async test_server(server_ready)
     client_task = @async test_client(server_ready)
-    if isdefined(Base, :errormonitor)
-        errormonitor(server_task)
-        errormonitor(client_task)
+    # a failure in either task fails the testset; one side failing can leave the other
+    # waiting for it, hence the timeout rather than a plain `fetch`
+    tasks = (server_task, client_task)
+    @test timedwait(() -> all(istaskdone, tasks), 60.0) === :ok
+    for task in tasks
+        @test istaskdone(task) && fetch(task) === nothing
     end
 end
 
