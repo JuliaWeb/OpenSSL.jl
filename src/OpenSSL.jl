@@ -2010,6 +2010,41 @@ function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C
     end
 end
 
+function write_pubkey(io::IO, evp_pkey::EvpPKey)
+	bio = BIO(BIOMethodMemory())
+
+	GC.@preserve bio begin
+		if ccall(
+			(:PEM_write_bio_PUBKEY, libcrypto),
+			Cint,
+			(BIO, EvpPKey),
+			bio,
+			evp_pkey) != 1
+			throw(OpenSSLError())
+		end
+		return write(io, bio_get_mem_data(bio))
+	end
+end
+
+function read_pubkey(in_string::AbstractString)::EvpPKey
+    bio = BIO(BIOMethodMemory())
+    write(bio, in_string)
+
+    evp_pkey = ccall(
+        (:PEM_read_bio_PUBKEY, libcrypto),
+        Ptr{Cvoid},
+        (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+        bio,
+        C_NULL,
+        C_NULL,
+        C_NULL)
+    if evp_pkey == C_NULL
+        throw(OpenSSLError())
+    end
+    free(bio)
+    return EvpPKey(evp_pkey)
+end
+
 function get_key_type(evp_pkey::EvpPKey)::EvpPKeyType
     pkey_type = ccall(
         (EVP_PKEY_base_id, libcrypto),
