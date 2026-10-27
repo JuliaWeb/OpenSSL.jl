@@ -323,14 +323,21 @@ end
 end
 
 @testset "HMAC" begin
-	# echo -n "Hello world" | openssl dgst -sha256 -mac hmac -macopt hexkey:01020304
-	@test bytes2hex(hmac(OpenSSL.EvpSHA256(), "Hello world", hex2bytes("01020304"))) == "760e94f3d42452f372885f22d3ed5915ffa5a7d6ddf38716331f9c2786f21e5a"
+    # echo -n "Hello world" | openssl dgst -sha256 -mac hmac -macopt hexkey:01020304
+    @test bytes2hex(OpenSSL.hmac(OpenSSL.EvpSHA256(), "Hello world", hex2bytes("01020304"))) == "760e94f3d42452f372885f22d3ed5915ffa5a7d6ddf38716331f9c2786f21e5a"
 
-	# echo -n "Hello world" | openssl dgst -sha512 -hmac "Σλ"
-	@test bytes2hex(hmac(OpenSSL.EvpSHA512(), "Hello world", "Σλ")) == "dfe48de81d0f5f8976d20e10c6fa2f82ff3cc28ae5060b396f70e26d45563a4cfa446d53d5fbea377018b54dac1ec368c979fb2b4a99f642cb0a2d8422c3bfa6"
+    # echo -n "Hello world" | openssl dgst -sha512 -hmac "Σλ"
+    @test bytes2hex(OpenSSL.hmac(OpenSSL.EvpSHA512(), "Hello world", "Σλ")) == "dfe48de81d0f5f8976d20e10c6fa2f82ff3cc28ae5060b396f70e26d45563a4cfa446d53d5fbea377018b54dac1ec368c979fb2b4a99f642cb0a2d8422c3bfa6"
+    @test OpenSSL.hmac(OpenSSL.EvpSHA512(), Vector{UInt8}("Hello world"), "Σλ") == OpenSSL.hmac(OpenSSL.EvpSHA512(), "Hello world", "Σλ")
 
-	# echo -n "Hello world" | openssl dgst -sha256 -hmac ""
-	@test bytes2hex(hmac(OpenSSL.EvpSHA256(), [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64], b"")) == "c50d316a00f927059322a898ea2fa7321fdb4d32eb749656ea7ba7775a870dc0"
+    # echo -n "Hello world" | openssl dgst -sha256 -hmac ""
+    @test bytes2hex(OpenSSL.hmac(OpenSSL.EvpSHA256(), [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64], b"")) == "c50d316a00f927059322a898ea2fa7321fdb4d32eb749656ea7ba7775a870dc0"
+
+    # inputs not stored as one block of memory give the MAC of their bytes
+    data = rand(UInt8, 100)
+    key = rand(UInt8, 20)
+    @test OpenSSL.hmac(OpenSSL.EvpSHA256(), view(data, 1:2:100), key) == OpenSSL.hmac(OpenSSL.EvpSHA256(), data[1:2:100], key)
+    @test OpenSSL.hmac(OpenSSL.EvpSHA256(), data, 0x01:0x14) == OpenSSL.hmac(OpenSSL.EvpSHA256(), data, collect(0x01:0x14))
 end
 
 @testset "SelfSignedCertificate" begin
