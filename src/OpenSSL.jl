@@ -30,7 +30,7 @@ export TLSv12ClientMethod, TLSv12ServerMethod,
     EvpEncNull, EvpBlowFishCBC, EvpBlowFishECB, EvpBlowFishCFB, EvpBlowFishOFB, EvpAES128CBC,
     EvpAES128ECB, EvpAES128CFB, EvpAES128OFB, EvpMDNull, EvpMD2, EvpMD5, EvpSHA1, EvpDSS1,
     encrypt_init, cipher, add_extension, add_extensions, decrypt_init, digest_init, digest_update, digest_final,
-    digest, hmac, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
+    digest, random_bytes, rsa_generate_key, dsa_generate_key, add_entry, sign_certificate, sign_request, adjust,
     add_cert, unpack, eof, isreadable, iswritable, bytesavailable, read, unsafe_write, connect,
     get_peer_certificate, free, HTTP2_ALPN, UPDATE_HTTP2_ALPN, version
 
@@ -1227,11 +1227,17 @@ function digest(evp_digest::EvpDigest, io::IO)
     return result
 end
 
-
 """
-    Compute the hash-based message authentication code of the given data using a key and a hash function.
+    hmac(evp_digest::EvpDigest, data, key) -> Vector{UInt8}
+
+Compute the HMAC of `data` keyed with `key`, using the hash function `evp_digest` (for
+example `EvpSHA256()`). `data` and `key` are each a string or a byte vector.
 """
 function hmac(evp_digest::EvpDigest, in_data::AbstractVector{UInt8}, key::AbstractVector{UInt8})::Vector{UInt8}
+    # `HMAC` reads each input as one block of memory: a vector stored any other way (a
+    # strided view, a range) is copied into a `Vector` first
+    in_data = convert(Vector{UInt8}, in_data)
+    key = convert(Vector{UInt8}, key)
     out_data = Vector{UInt8}(undef, EVP_MAX_MD_SIZE)
     out_length = Ref{UInt32}(0)
     GC.@preserve key in_data out_data out_length begin
@@ -1252,8 +1258,7 @@ end
 
 hmac(evp_digest::EvpDigest, in_data::AbstractString, key::AbstractString)::Vector{UInt8} = hmac(evp_digest, codeunits(in_data), codeunits(key))
 hmac(evp_digest::EvpDigest, in_data::AbstractString, key::AbstractVector{UInt8})::Vector{UInt8} = hmac(evp_digest, codeunits(in_data), key)
-
-
+hmac(evp_digest::EvpDigest, in_data::AbstractVector{UInt8}, key::AbstractString)::Vector{UInt8} = hmac(evp_digest, in_data, codeunits(key))
 
 """
     RSA structure.
