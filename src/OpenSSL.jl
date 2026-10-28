@@ -1436,6 +1436,10 @@ function ec_generate_key(nid::Integer)::EC
         throw(OpenSSLError())
     end
     ec = EC(ecptr)
+
+    # flag=0x001 (OPENSSL_EC_NAMED_CURVE) Ensure params (curve definition) are grouped with the key.
+    ccall((:EC_KEY_set_asn1_flag, libcrypto), Cvoid, (EC, Cint), ec, 0x001)
+
     if ccall((:EC_KEY_generate_key, libcrypto), Cint, (EC,), ec) != 1
         throw(OpenSSLError())
     end
@@ -3049,6 +3053,169 @@ function unpack(p12_object::P12Object)
 
     return evp_pkey, x509_cert, x509_ca_stack
 end
+
+
+function digest_sign_init(evp_digest_ctx::EvpDigestContext, evp_digest::EvpDigest, evp_pkey::EvpPKey)
+    if ccall(
+        (:EVP_DigestSignInit, libcrypto),
+        Cint,
+        (EvpDigestContext, Ptr{Cvoid}, EvpDigest, Ptr{Cvoid}, EvpPKey),
+        evp_digest_ctx,
+        C_NULL,
+        evp_digest,
+        C_NULL,
+        evp_pkey) != 1
+        throw(OpenSSLError())
+    end
+end
+
+function digest_sign_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
+    GC.@preserve in_data begin
+        if ccall(
+            (:EVP_DigestSignUpdate, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx,
+            pointer(in_data),
+            length(in_data)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function digest_sign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
+    out_length = Ref{UInt32}(0)
+    # First call EVP_DigestSignFinal with a NULL sig parameter to obtain the length of the sginature.
+    # Length is returned in out_length
+    GC.@preserve out_length begin
+        if ccall(
+            (:EVP_DigestSignFinal, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            evp_digest_ctx,
+            C_NULL,
+            pointer_from_objref(out_length)) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    out_data = Vector{UInt8}(undef, out_length.x)
+    GC.@preserve out_data out_length begin
+        if ccall(
+            (:EVP_DigestSignFinal, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            evp_digest_ctx,
+            pointer(out_data),
+            pointer_from_objref(out_length)) != 1
+            throw(OpenSSLError())
+        end
+    end
+
+    return out_data
+end
+
+"""
+    digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO) -> Vector{UInt8}
+
+Signs the data read from `io` using the provided hash function `evp_digest` and key `evp_pkey`. The result is returned as a vector of bytes.
+"""
+function digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO)
+    md_ctx = EvpDigestContext()
+
+    try
+        GC.@preserve evp_pkey begin
+            digest_sign_init(md_ctx, evp_digest, evp_pkey)
+
+            while !eof(io)
+                available_bytes = bytesavailable(io)
+                in_data = read(io, available_bytes)
+                digest_sign_update(md_ctx, in_data)
+            end
+
+            result = digest_sign_final(md_ctx)
+            return result
+        end
+    finally
+    	finalize(md_ctx)
+    end
+end
+
+function digest_verify_init(evp_digest_ctx::EvpDigestContext, evp_digest::EvpDigest, evp_pkey::EvpPKey)
+    if ccall(
+        (:EVP_DigestVerifyInit, libcrypto),
+        Cint,
+        (EvpDigestContext, Ptr{Cvoid}, EvpDigest, Ptr{Cvoid}, EvpPKey),
+        evp_digest_ctx,
+        C_NULL,
+        evp_digest,
+        C_NULL,
+        evp_pkey) != 1
+        throw(OpenSSLError())
+    end
+end
+
+function digest_verify_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
+    GC.@preserve in_data begin
+        if ccall(
+            (:EVP_DigestVerifyUpdate, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx,
+            pointer(in_data),
+            length(in_data)) != 1
+            throw(OpenSSLError())
+        end
+    end
+end
+
+function digest_verify_final(evp_digest_ctx::EvpDigestContext, signature::Vector{UInt8})
+    verified = 0
+    GC.@preserve signature begin
+        verified = ccall(
+            (:EVP_DigestVerifyFinal, libcrypto),
+            Cint,
+            (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx,
+            pointer(signature),
+            length(signature))
+    end
+    return verified
+end
+
+"""
+    digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signature::Vector{UInt8}) -> Bool
+
+Verifies a digital signature on data read from an IO stream `io` using the provided key `evp_pkey` and hash function `evp_digest`.
+Returns `true` if the signature is valid, `false` otherwise.
+
+Throws an `OpenSSLError` if an error occurs during the verification process.
+"""
+function digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signature::Vector{UInt8})
+	md_ctx = EvpDigestContext()
+
+    try
+        GC.@preserve md_ctx evp_digest evp_pkey signature begin
+            digest_verify_init(md_ctx, evp_digest, evp_pkey)
+
+            while !eof(io)
+                available_bytes = bytesavailable(io)
+                in_data = read(io, available_bytes)
+                digest_verify_update(md_ctx, in_data)
+            end
+
+            verified = digest_verify_final(md_ctx, signature)
+
+            verified == 1 && return true
+            verified == 0 && return false
+            throw(OpenSSLError())
+        end
+    finally
+    	finalize(md_ctx)
+    end
+end
+
+
 
 """
     Crypto Init.

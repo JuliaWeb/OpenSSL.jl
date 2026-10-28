@@ -340,6 +340,26 @@ end
     @test OpenSSL.hmac(OpenSSL.EvpSHA256(), data, 0x01:0x14) == OpenSSL.hmac(OpenSSL.EvpSHA256(), data, collect(0x01:0x14))
 end
 
+
+@testset "DigestSignAndVerify" begin
+	evp_pkey = EvpPKey(rsa_generate_key())
+
+    io = IOBuffer()
+    # Save the public key
+    OpenSSL.write_pubkey(io, evp_pkey)
+    pubkey_pem = String(take!(io))
+
+    # Sign data with the private key
+    io = IOBuffer("My data to sign and verify.")
+    signature = OpenSSL.digest_sign(OpenSSL.EvpSHA256(), evp_pkey, io)
+
+    # Read the public key and verify the signature
+    pub_evp_pkey = OpenSSL.read_pubkey(pubkey_pem)
+    io = IOBuffer("My data to sign and verify.")
+    @test OpenSSL.digest_verify(OpenSSL.EvpSHA256(), pub_evp_pkey, io, signature)
+end
+
+
 @testset "SelfSignedCertificate" begin
     x509_certificate = X509Certificate()
 
