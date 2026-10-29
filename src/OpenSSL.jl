@@ -3084,14 +3084,14 @@ function digest_sign_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UI
 end
 
 function digest_sign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
-    out_length = Ref{UInt32}(0)
-    # First call EVP_DigestSignFinal with a NULL sig parameter to obtain the length of the sginature.
-    # Length is returned in out_length
+    out_length = Ref{Csize_t}(0)
+    # First call EVP_DigestSignFinal with a NULL sig parameter to obtain the max ength of the signature.
+    # Max length is returned in out_length
     GC.@preserve out_length begin
         if ccall(
             (:EVP_DigestSignFinal, libcrypto),
             Cint,
-            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            (EvpDigestContext, Ptr{UInt8}, Ptr{Csize_t}),
             evp_digest_ctx,
             C_NULL,
             pointer_from_objref(out_length)) != 1
@@ -3104,13 +3104,15 @@ function digest_sign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
         if ccall(
             (:EVP_DigestSignFinal, libcrypto),
             Cint,
-            (EvpDigestContext, Ptr{UInt8}, Ptr{UInt32}),
+            (EvpDigestContext, Ptr{UInt8}, Ptr{Csize_t}),
             evp_digest_ctx,
             pointer(out_data),
             pointer_from_objref(out_length)) != 1
             throw(OpenSSLError())
         end
     end
+    # Resize since out_length is updated with the actual length of the written signature.
+    resize!(out_data, out_length.x)
 
     return out_data
 end

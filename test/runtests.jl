@@ -342,21 +342,31 @@ end
 
 
 @testset "DigestSignAndVerify" begin
-	evp_pkey = EvpPKey(rsa_generate_key())
+	function testSignAndVerify(evp_pkey::EvpPKey, evp_digest::OpenSSL.EvpDigest, data)
+		io = IOBuffer()
+		# Save the public key
+		OpenSSL.write_pubkey(io, evp_pkey)
+		pubkey_pem = String(take!(io))
 
-    io = IOBuffer()
-    # Save the public key
-    OpenSSL.write_pubkey(io, evp_pkey)
-    pubkey_pem = String(take!(io))
+		# Sign data with the private key
+		io = IOBuffer(data)
+		signature = OpenSSL.digest_sign(evp_digest, evp_pkey, io)
 
-    # Sign data with the private key
-    io = IOBuffer("My data to sign and verify.")
-    signature = OpenSSL.digest_sign(OpenSSL.EvpSHA256(), evp_pkey, io)
+		# Read the public key and verify the signature
+		pub_evp_pkey = OpenSSL.read_pubkey(pubkey_pem)
+		io = IOBuffer(data)
+		return OpenSSL.digest_verify(evp_digest, pub_evp_pkey, io, signature)
+	end
 
-    # Read the public key and verify the signature
-    pub_evp_pkey = OpenSSL.read_pubkey(pubkey_pem)
-    io = IOBuffer("My data to sign and verify.")
-    @test OpenSSL.digest_verify(OpenSSL.EvpSHA256(), pub_evp_pkey, io, signature)
+	@testset "SignWithRSAKey" begin
+		evp_pkey = EvpPKey(rsa_generate_key())
+	    @test testSignAndVerify(evp_pkey, OpenSSL.EvpSHA256(), "My data to sign and verify.")
+	end
+
+	@testset "SignWithECKey" begin
+		evp_pkey = EvpPKey(OpenSSL.ec_generate_key("prime256v1"))
+		@test testSignAndVerify(evp_pkey, OpenSSL.EvpSHA256(), "My data to sign and verify.")
+	end
 end
 
 
