@@ -1223,8 +1223,8 @@ end
 
 @testset "CloseBehindRawWriteNoShutdown" begin
     # the same, for a close that makes no close_notify (`close(ssl, false)`, which the
-    # failed-call path and the finalizer use): nothing is buffered to send, but Base's
-    # own socket close waits behind the parked write, so that too is bounded
+    # failed-call path uses): nothing is buffered to send, but Base's own socket close
+    # waits behind the parked write, so that too is bounded
     server_ctx = selfsigned_server_ctx()
     port, server = Sockets.listenany(ip"127.0.0.1", 20000)
     client, ssl = connected_pair(server_ctx, server)
@@ -1237,6 +1237,24 @@ end
     @test timedwait(() -> istaskdone(raw), OpenSSL.CLOSE_NOTIFY_GRACE + 30.0) === :ok
     @test timedwait(() -> !isopen(client.io), 30.0) === :ok
     @test timedwait(() -> !islocked(client.sendlock), 30.0) === :ok
+    close(ssl, false)
+    close(server)
+end
+
+@testset "FinalizerClosesInPlace" begin
+    # the finalizer closes the socket itself, without starting a task (Julia runs
+    # finalizers at exit, when a task another thread starts can crash the process), and
+    # leaves a stream whose lock is held to a later collection rather than wait for it
+    server_ctx = selfsigned_server_ctx()
+    port, server = Sockets.listenany(ip"127.0.0.1", 20000)
+    client, ssl = connected_pair(server_ctx, server)
+    lock(client.lock)
+    finalize(client)
+    @test isopen(client)
+    unlock(client.lock)
+    finalize(client)
+    @test !isopen(client)
+    @test client.io.status in (Base.StatusClosing, Base.StatusClosed)
     close(ssl, false)
     close(server)
 end

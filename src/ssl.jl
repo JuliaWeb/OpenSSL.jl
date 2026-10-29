@@ -470,9 +470,7 @@ mutable struct SSLStream <: IO
         bio_write::BIO = BIO(data; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
         x = new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false, data, ReentrantLock(), ReentrantLock())
-        # no close_notify from the finalizer: sending it is a socket write, which can
-        # wait for the peer, and a finalizer may not switch tasks
-        finalizer(x -> close(x, false), x)
+        finalizer(finalize_stream, x)
         return x
     end
 end
@@ -553,11 +551,11 @@ end
 # thread for good (Julia 1.7+), and the reply does not care which thread sends it.
 function sendreply!(ssl::SSLStream)
     (Base.@lock ssl.lock isempty(ssl.data.buf)) && return
-    Threads.@spawn try
+    errormonitor(Threads.@spawn try
         trylock(ssl.sendlock) && drainlocked!(ssl)
     catch e
         e isa Base.IOError || rethrow()
-    end
+    end)
     return
 end
 
@@ -575,22 +573,42 @@ function forceclose!(io::TCPSocket)
                 ccall(:uv_is_closing, Cint, (Ptr{Cvoid},), handle) == 0
             @static if Sys.iswindows()
                 # libuv's close cancels only the pending writes the calling thread
-                # issued (`CancelIo`), and waits for the rest before it closes the
-                # socket: a write parked by a task on another thread would keep it open.
-                # Cancel every thread's I/O on the socket, once the handle is closing
+                # issued (`CancelIo`): a write parked by a task on another thread would
+                # keep the socket open. Cancel every thread's I/O on the socket first,
+                # while the handle is still valid: the close may release it at once
                 sock = Ref{Ptr{Cvoid}}(C_NULL)
-                gotsock = ccall(:uv_fileno, Cint, (Ptr{Cvoid}, Ptr{Ptr{Cvoid}}), handle, sock) == 0
+                if ccall(:uv_fileno, Cint, (Ptr{Cvoid}, Ptr{Ptr{Cvoid}}), handle, sock) == 0
+                    ccall((:CancelIoEx, "kernel32"), stdcall, Cint,
+                        (Ptr{Cvoid}, Ptr{Cvoid}), sock[], C_NULL)
+                end
             end
             ccall(:jl_forceclose_uv, Cvoid, (Ptr{Cvoid},), handle)
             io.status = Base.StatusClosing
-            @static if Sys.iswindows()
-                gotsock && ccall((:CancelIoEx, "kernel32"), stdcall, Cint,
-                    (Ptr{Cvoid}, Ptr{Cvoid}), sock[], C_NULL)
-            end
         end
     finally
         Base.iolock_end()
     end
+    return
+end
+
+# The finalizer neither waits nor starts a task, so no close_notify: Julia runs every
+# finalizer at exit, also those of live streams, and a task started then can crash the
+# process. It frees the SSL object and closes the socket handle outright. A stream
+# whose lock is held is finalized at a later collection instead (the manual's pattern
+# for finalizers that need a lock).
+function finalize_stream(ssl::SSLStream)
+    if islocked(ssl.lock) || !trylock(ssl.lock)
+        finalizer(finalize_stream, ssl)
+        return
+    end
+    try
+        ssl.closed && return
+        ssl.closed = true
+        free(ssl.ssl)
+    finally
+        unlock(ssl.lock)
+    end
+    forceclose!(ssl.io)
     return
 end
 
@@ -976,15 +994,15 @@ function Base.eof(ssl::SSLStream)::Bool
     return !isopen(ssl)
 end
 
-"""
-    Close SSL stream.
-"""
 # how long `close` lets the socket write of what is left to send (an alert from a
 # failed call, the close_notify) take before it closes the socket outright: a peer that
 # stopped reading would otherwise hold the stream's `sendlock`, and the socket, open
 # forever
 const CLOSE_NOTIFY_GRACE = 5.0
 
+"""
+    Close SSL stream.
+"""
 function Base.close(ssl::SSLStream, shutdown::Bool=true)
     data = ssl.data
     inflight = Base.@lock ssl.lock begin
@@ -1025,9 +1043,10 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
         # what is buffered (the alert a failed call produced, the close_notify), then
         # the socket close, from a task: `close` does not wait on the socket. Nor does
         # the task wait forever: a peer that has stopped reading gets the socket closed
-        # outright instead. Spawned rather than `@async`ed, which would pin the closing
-        # task to its thread (see `sendreply!`)
-        Threads.@spawn begin
+        # outright instead. `@async`, unlike `Threads.@spawn`, keeps the task on this
+        # thread, so a `close` just before `exit` does not have another thread start
+        # it while the process goes down
+        errormonitor(@async begin
             # the timer covers the socket close as well: Base's close waits for the
             # socket's pending writes to leave, which a parked raw write never does
             grace = Timer(_ -> forceclose!(ssl.io), CLOSE_NOTIFY_GRACE)
@@ -1046,8 +1065,9 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
             finally
                 close(grace)
             end
-        end
+        end)
     end
+    return
 end
 
 """
