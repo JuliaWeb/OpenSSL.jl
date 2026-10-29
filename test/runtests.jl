@@ -252,6 +252,36 @@ end
     #finalize(x509_cert)
 end
 
+# The time of a certificate that is garbage once this returns.
+@noinline time_of_dropped_cert(pem) = X509Certificate(pem).time_not_after
+
+@testset "CertificateTimeKeepsCertificate" begin
+    # A certificate's time points into the certificate: it keeps the certificate alive
+    # while it is in use, and freeing it leaves the certificate's own time alone.
+    pem = read(joinpath(@__DIR__, "certs", "1001acf7.0"), String)
+    expected = String(X509Certificate(pem).time_not_after)
+    for _ in 1:20
+        t = time_of_dropped_cert(pem)
+        GC.gc(true)
+        @test String(t) == expected
+    end
+
+    cert = X509Certificate(pem)
+    t = cert.time_not_after
+    free(cert)
+    GC.gc(true)
+    @test String(t) == expected
+
+    cert = X509Certificate(pem)
+    t = cert.time_not_after
+    free(t)
+    @test String(t) == "C_NULL"
+    @test String(cert.time_not_after) == expected
+    # the view's time is the certificate's own: adjusting it changes the certificate
+    Dates.adjust(cert.time_not_after, Year(1))
+    @test String(cert.time_not_after) != expected
+end
+
 @testset "StackOf{X509Certificate}" begin
     file_handle = open(MozillaCACerts_jll.cacert)
     file_content = String(read(file_handle))
