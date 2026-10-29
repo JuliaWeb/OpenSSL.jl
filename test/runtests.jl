@@ -765,6 +765,51 @@ end
     @test _evp_pkey == evp_pkey
 end
 
+@testset "PEMNeverAsksForPassphrase" begin
+    # Any PEM block can carry encryption headers, and OpenSSL then asks for a
+    # passphrase: with no callback, by prompting on the terminal and reading it there,
+    # which blocks the reading thread, and every other one at the next collection, until
+    # someone types one. Without a terminal it prompts on stderr and reads stdin.
+    cert = read(joinpath(@__DIR__, "certs", "1001acf7.0"), String)
+    lines = split(strip(cert), '\n')
+    headers = "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n"
+    pem = string(lines[1], "\n", headers, join(lines[2:end], "\n"), "\n")
+    script = """
+        using OpenSSL
+        pem = $(repr(pem))
+        for parse in (X509Certificate,
+                      p -> OpenSSL.read_pubkey(replace(p, "CERTIFICATE" => "PUBLIC KEY")),
+                      p -> EvpPKey(replace(p, "CERTIFICATE" => "PRIVATE KEY")))
+            try
+                parse(pem)
+                exit(2)
+            catch e
+                e isa OpenSSL.OpenSSLError || exit(3)
+            end
+        end
+        """
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $script`
+    err = IOBuffer()
+    p = run(pipeline(ignorestatus(cmd); stdin=devnull, stderr=err))
+    @test success(p)
+    @test !occursin("pass phrase", String(take!(err)))
+end
+
+@testset "EncryptedPrivateKey" begin
+    evp_pkey = EvpPKey(rsa_generate_key())
+    io = IOBuffer()
+    n = write(io, evp_pkey, OpenSSL.EvpAES128CBC(); passphrase="Zoë")
+    pem = String(take!(io))
+    @test n == sizeof(pem)
+    @test startswith(pem, "-----BEGIN ENCRYPTED PRIVATE KEY-----")
+    @test EvpPKey(pem; passphrase="Zoë") == evp_pkey
+    @test_throws OpenSSL.OpenSSLError EvpPKey(pem; passphrase="wrong")
+    @test_throws OpenSSL.OpenSSLError EvpPKey(pem)
+    # a cipher without a passphrase, or a passphrase that would go unused
+    @test_throws ArgumentError write(io, evp_pkey, OpenSSL.EvpAES128CBC())
+    @test_throws ArgumentError write(io, evp_pkey; passphrase="Zoë")
+end
+
 @testset "DSA" begin
     evp_pkey = EvpPKey(dsa_generate_key())
     @test occursin("priv:", String(evp_pkey))

@@ -1864,6 +1864,18 @@ Dates.adjust(asn1_time::Asn1Time, days::Day) = Dates.adjust(asn1_time, Second(da
 
 Dates.adjust(asn1_time::Asn1Time, years::Year) = Dates.adjust(asn1_time, Day(365 * years.value))
 
+# OpenSSL asks a PEM read for the passphrase of a block with encryption headers, which
+# any PEM text can carry. Given no callback, OpenSSL's own reads one from the terminal,
+# blocking the calling thread (and every other one, at the next collection) until someone
+# types it. This callback fails instead.
+no_passphrase(buf::Ptr{Cchar}, size::Cint, rwflag::Cint, u::Ptr{Cvoid})::Cint = Cint(-1)
+no_passphrase_callback() = @cfunction(no_passphrase, Cint, (Ptr{Cchar}, Cint, Cint, Ptr{Cvoid}))
+
+# The callback and its argument for a PEM read: OpenSSL's default callback hands over a
+# given passphrase (the argument) without asking anyone.
+pem_passphrase(::Nothing) = (no_passphrase_callback(), Cstring(C_NULL))
+pem_passphrase(passphrase::AbstractString) = (C_NULL, String(passphrase))
+
 """
     EVP_PKEY, EVP Public Key interface.
 """
@@ -1938,21 +1950,25 @@ mutable struct EvpPKey
     end
 
     """
-        Creates a EvpPKey from PEM string.
+        EvpPKey(in_string::AbstractString; passphrase=nothing)
+
+    Read a private key from a PEM string. An encrypted key needs its `passphrase`;
+    without it the read fails.
     """
-    function EvpPKey(in_string::AbstractString)::EvpPKey
+    function EvpPKey(in_string::AbstractString; passphrase::Union{Nothing,AbstractString}=nothing)::EvpPKey
         # Create a BIO and write the PEM string.
         bio = BIO(BIOMethodMemory())
         write(bio, in_string)
 
+        callback, arg = pem_passphrase(passphrase)
         evp_pkey = ccall(
             (:PEM_read_bio_PrivateKey, libcrypto),
             Ptr{Cvoid},
-            (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Cstring),
             bio,
             C_NULL,
-            C_NULL,
-            C_NULL)
+            callback,
+            arg)
         if evp_pkey == C_NULL
             throw(OpenSSLError())
         end
@@ -1989,20 +2005,32 @@ function Base.:(==)(evp_pkey_1::EvpPKey, evp_pkey_2::EvpPKey)
     return result == 1
 end
 
-function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
+"""
+    write(io::IO, evp_pkey::EvpPKey, [evp_cipher::EvpCipher]; passphrase=nothing) -> Int
+
+Write the private key `evp_pkey` to `io` in PEM format, encrypted with `evp_cipher` and
+`passphrase` when a cipher is given (both or neither), and return the number of bytes
+written.
+"""
+function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL);
+        passphrase::Union{Nothing,AbstractString}=nothing)
+    # without a passphrase OpenSSL would ask the terminal for one
+    (evp_cipher.evp_cipher == C_NULL) == (passphrase === nothing) ||
+        throw(ArgumentError("an encrypted key needs both a cipher and a passphrase"))
+    pass = passphrase === nothing ? Cstring(C_NULL) : String(passphrase)
     bio = BIO(BIOMethodMemory())
 
     GC.@preserve bio begin
         if ccall(
             (:PEM_write_bio_PrivateKey, libcrypto),
             Cint,
-            (BIO, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
+            (BIO, EvpPKey, EvpCipher, Cstring, Cint, Ptr{Cvoid}, Ptr{Cvoid}),
             bio,
             evp_pkey,
             evp_cipher,
-            C_NULL,
-            0,
-            0,
+            pass,
+            passphrase === nothing ? 0 : sizeof(pass),
+            no_passphrase_callback(),
             C_NULL) != 1
             throw(OpenSSLError())
         end
@@ -2048,7 +2076,7 @@ function read_pubkey(pem::AbstractString)::EvpPKey
         (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
         bio,
         C_NULL,
-        C_NULL,
+        no_passphrase_callback(),
         C_NULL)
     if evp_pkey == C_NULL
         throw(OpenSSLError())
@@ -2395,7 +2423,7 @@ mutable struct X509Certificate
             (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
             bio,
             C_NULL,
-            C_NULL,
+            no_passphrase_callback(),
             C_NULL)
         if x509 == C_NULL
             throw(OpenSSLError())
