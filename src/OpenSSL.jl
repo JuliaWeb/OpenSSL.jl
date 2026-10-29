@@ -1539,8 +1539,10 @@ mutable struct BIOMethod
             throw(OpenSSLError())
         end
 
+        # Not freed: the method is the process's own (`BIO_STREAM_METHOD`), used by every
+        # stream until the process ends. A finalizer would free it at exit, when Julia runs
+        # every finalizer while other threads may still create or free streams.
         bio_method = new(bio_method)
-        finalizer(free, bio_method)
 
         if ccall(
             (:BIO_meth_set_create, libcrypto),

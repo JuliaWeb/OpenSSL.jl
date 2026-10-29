@@ -1295,6 +1295,20 @@ end
     close(server)
 end
 
+@testset "StreamMethodOutlivesFinalizers" begin
+    # Julia runs every finalizer at exit while other threads may still create and free
+    # streams, so the BIO method all streams share must not be freed by one: a stream
+    # made after it would use the freed method. `finalize` runs what exit would run.
+    script = """
+        using OpenSSL, Sockets
+        finalize(OpenSSL.BIO_STREAM_METHOD.x)
+        s = OpenSSL.SSLStream(OpenSSL.SSLContext(OpenSSL.TLSClientMethod(), ""), TCPSocket())
+        OpenSSL.free(s.ssl)
+        """
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $script`
+    @test success(ignorestatus(cmd))
+end
+
 @testset "CloseNotifyEOF" begin
     # the peer's close_notify, sent by `close`, surfaces from `eof` as the "unexpected
     # EOF" `IOError` and closes the stream; and it follows the writes made before the
