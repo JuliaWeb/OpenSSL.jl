@@ -2115,7 +2115,12 @@ mutable struct StackOf{T}
     end
 end
 
+# The stack holds a reference to each element (`push!` takes one; a stack OpenSSL returns,
+# such as `get_extensions` or `unpack`, hands over its elements), and they go with it.
 function free(stack_of::StackOf{T}) where {T}
+    while length(stack_of) > 0
+        free(pop!(stack_of))
+    end
     ccall(
         (:OPENSSL_sk_free, libcrypto),
         Cvoid,
@@ -2141,7 +2146,9 @@ function Base.push!(stack_of::StackOf{T}, element::T) where {T}
     return count
 end
 
+# The element, with the stack's reference to it.
 function Base.pop!(stack_of::StackOf{T}) where {T}
+    length(stack_of) > 0 || throw(ArgumentError("stack must be non-empty"))
     ptr = ccall(
         (:OPENSSL_sk_pop, libcrypto),
         Ptr{Cvoid},
