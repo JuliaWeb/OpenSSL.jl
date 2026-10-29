@@ -287,6 +287,38 @@ end
     @test _n1 == n2
 end
 
+# How many certificates OpenSSL has freed: an ex_data index's free callback runs for every
+# X509 that goes.
+const X509_FREES = Threads.Atomic{Int}(0)
+count_x509_free(parent::Ptr{Cvoid}, ptr::Ptr{Cvoid}, ad::Ptr{Cvoid}, idx::Cint, argl::Clong, argp::Ptr{Cvoid}) =
+    (Threads.atomic_add!(X509_FREES, 1); nothing)
+
+@testset "StackOwnsElements" begin
+    # A stack holds a reference to each element (`push!` takes one), and freeing the stack
+    # drops them: a certificate whose only reference is the stack's goes with it.
+    @test ccall((:CRYPTO_get_ex_new_index, OpenSSL.libcrypto), Cint,
+        (Cint, Clong, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+        3, 0, C_NULL, C_NULL, C_NULL,  # 3: CRYPTO_EX_INDEX_X509
+        @cfunction(count_x509_free, Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cint, Clong, Ptr{Cvoid}))) >= 0
+    pem = read(joinpath(@__DIR__, "certs", "1001acf7.0"), String)
+    GC.gc(true)
+    GC.enable(false)  # no other certificate's finalizer meanwhile
+    try
+        st = StackOf{X509Certificate}()
+        for _ in 1:3
+            cert = X509Certificate(pem)
+            push!(st, cert)
+            free(cert)
+        end
+        n = X509_FREES[]
+        free(st)
+        @test X509_FREES[] == n + 3
+    finally
+        GC.enable(true)
+    end
+    @test_throws ArgumentError pop!(StackOf{X509Certificate}())
+end
+
 @testset "X509Store" begin
     file_handle = open(MozillaCACerts_jll.cacert)
     file_content = String(read(file_handle))
