@@ -1807,8 +1807,12 @@ Base.write(bio::BIO, out_data) = return GC.@preserve out_data unsafe_write(bio, 
 """
 mutable struct Asn1Time
     asn1_time::Ptr{Cvoid}
+    # `nothing`, or for a certificate's own time (`time_not_before`, `time_not_after`),
+    # which points into the certificate, a reference to the certificate: it keeps the
+    # certificate alive while this is, and owns the time, so `free` leaves the time alone
+    owner::Any
 
-    Asn1Time(asn1_time::Ptr{Cvoid}) = new(asn1_time)
+    Asn1Time(asn1_time::Ptr{Cvoid}, owner=nothing) = new(asn1_time, owner)
 
     Asn1Time() = Asn1Time(0)
 
@@ -1825,21 +1829,28 @@ mutable struct Asn1Time
             throw(OpenSSLError())
         end
 
-        asn1_time = new(asn1_time)
+        asn1_time = new(asn1_time, nothing)
         finalizer(free, asn1_time)
 
         return asn1_time
     end
 end
 
+# The `ASN1_TIME *` for a ccall argument declared `Ptr{Cvoid}`; with its `owner` field
+# the struct itself no longer passes as that pointer.
+Base.unsafe_convert(::Type{Ptr{Cvoid}}, asn1_time::Asn1Time) = asn1_time.asn1_time
+
 function free(asn1_time::Asn1Time)
-    ccall(
-        (:ASN1_STRING_free, libcrypto),
-        Cvoid,
-        (Asn1Time,),
-        asn1_time)
+    if asn1_time.owner === nothing
+        ccall(
+            (:ASN1_STRING_free, libcrypto),
+            Cvoid,
+            (Ptr{Cvoid},),
+            asn1_time)
+    end
 
     asn1_time.asn1_time = C_NULL
+    asn1_time.owner = nothing
     return nothing
 end
 
@@ -1847,7 +1858,7 @@ function Dates.adjust(asn1_time::Asn1Time, seconds::Second)
     adj_asn1_time = ccall(
         (:X509_gmtime_adj, libcrypto),
         Ptr{Cvoid},
-        (Asn1Time, Int64),
+        (Ptr{Cvoid}, Int64),
         asn1_time,
         seconds.value)
     if adj_asn1_time == C_NULL
@@ -2570,15 +2581,16 @@ function get_time_not_before(x509_cert::X509Certificate)::Asn1Time
         throw(OpenSSLError())
     end
 
-    asn1_time = Asn1Time(asn1_time)
-    return asn1_time
+    # the certificate's own time, which it frees: held through a reference of its own to
+    # the certificate, so that neither collecting nor freeing `x509_cert` frees it
+    return Asn1Time(asn1_time, X509Certificate(up_ref(x509_cert)))
 end
 
 function set_time_not_before(x509_cert::X509Certificate, asn1_time::Asn1Time)
     if ccall(
         (:X509_set1_notBefore, libcrypto),
         Cint,
-        (X509Certificate, Asn1Time),
+        (X509Certificate, Ptr{Cvoid}),
         x509_cert,
         asn1_time) != 1
         throw(OpenSSLError())
@@ -2595,15 +2607,16 @@ function get_time_not_after(x509_cert::X509Certificate)::Asn1Time
         throw(OpenSSLError())
     end
 
-    asn1_time = Asn1Time(asn1_time)
-    return asn1_time
+    # the certificate's own time, which it frees: held through a reference of its own to
+    # the certificate, so that neither collecting nor freeing `x509_cert` frees it
+    return Asn1Time(asn1_time, X509Certificate(up_ref(x509_cert)))
 end
 
 function set_time_not_after(x509_cert::X509Certificate, asn1_time::Asn1Time)
     if ccall(
         (:X509_set1_notAfter, libcrypto),
         Cint,
-        (X509Certificate, Asn1Time),
+        (X509Certificate, Ptr{Cvoid}),
         x509_cert,
         asn1_time) != 1
         throw(OpenSSLError())
@@ -3116,7 +3129,7 @@ function Base.String(asn1_time::Asn1Time)
     if ccall(
         (:ASN1_TIME_print, libcrypto),
         Cint,
-        (BIO, Asn1Time),
+        (BIO, Ptr{Cvoid}),
         bio,
         asn1_time) != 1
         throw(OpenSSLError())
