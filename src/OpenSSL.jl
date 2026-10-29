@@ -3071,14 +3071,18 @@ end
 
 function digest_sign_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
     GC.@preserve in_data begin
-        if ccall(
-            (:EVP_DigestSignUpdate, libcrypto),
-            Cint,
-            (EvpDigestContext, Ptr{UInt8}, Csize_t),
-            evp_digest_ctx,
-            pointer(in_data),
-            length(in_data)) != 1
-            throw(OpenSSLError())
+
+        # Prior to OpenSSL 3, EVP_DigestSignUpdate was a macro pointing to EVP_DigestUpdate
+        if OpenSSL.version_number() < v"3.0"
+            if ccall((:EVP_DigestUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
+                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
+                throw(OpenSSLError())
+            end
+        else
+            if ccall((:EVP_DigestSignUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
+                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
+                throw(OpenSSLError())
+            end
         end
     end
 end
@@ -3159,14 +3163,17 @@ end
 
 function digest_verify_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
     GC.@preserve in_data begin
-        if ccall(
-            (:EVP_DigestVerifyUpdate, libcrypto),
-            Cint,
-            (EvpDigestContext, Ptr{UInt8}, Csize_t),
-            evp_digest_ctx,
-            pointer(in_data),
-            length(in_data)) != 1
-            throw(OpenSSLError())
+        # Prior to OpenSSL 3, EVP_DigestVerifyUpdate was a macro pointing to EVP_DigestUpdate
+        if OpenSSL.version_number() < v"3.0"
+            if ccall((:EVP_DigestUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
+                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
+                throw(OpenSSLError())
+            end
+        else
+            if ccall((:EVP_DigestVerifyUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
+                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
+                throw(OpenSSLError())
+            end
         end
     end
 end
