@@ -1008,8 +1008,8 @@ encrypt_init(evp_cipher_ctx::EvpCipherContext, evp_cipher::EvpCipher, symetric_k
 function cipher_update(evp_cipher_ctx::EvpCipherContext, in_data::Vector{UInt8})::Vector{UInt8}
     in_length = length(in_data)
 
-    block_size = get_block_size(evp_cipher_ctx)
-    enc_length = Int((in_length + block_size - 1) / block_size * block_size)
+    # Decrypting with padding can write up to `in_length + block_size` bytes (EVP_DecryptUpdate docs).
+    enc_length = in_length + get_block_size(evp_cipher_ctx)
 
     out_data = Vector{UInt8}(undef, enc_length)
     out_length = Ref{UInt32}(0)
