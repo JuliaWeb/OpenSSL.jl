@@ -1436,10 +1436,6 @@ function ec_generate_key(nid::Integer)::EC
         throw(OpenSSLError())
     end
     ec = EC(ecptr)
-
-    # flag=0x001 (OPENSSL_EC_NAMED_CURVE) Ensure params (curve definition) are grouped with the key.
-    ccall((:EC_KEY_set_asn1_flag, libcrypto), Cvoid, (EC, Cint), ec, 0x001)
-
     if ccall((:EC_KEY_generate_key, libcrypto), Cint, (EC,), ec) != 1
         throw(OpenSSLError())
     end
