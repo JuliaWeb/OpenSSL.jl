@@ -3091,10 +3091,10 @@ function digest_sign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
         if ccall(
             (:EVP_DigestSignFinal, libcrypto),
             Cint,
-            (EvpDigestContext, Ptr{UInt8}, Ptr{Csize_t}),
+            (EvpDigestContext, Ptr{UInt8}, Ref{Csize_t}),
             evp_digest_ctx,
             C_NULL,
-            pointer_from_objref(out_length)) != 1
+            out_length) != 1
             throw(OpenSSLError())
         end
     end
@@ -3104,10 +3104,10 @@ function digest_sign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
         if ccall(
             (:EVP_DigestSignFinal, libcrypto),
             Cint,
-            (EvpDigestContext, Ptr{UInt8}, Ptr{Csize_t}),
+            (EvpDigestContext, Ptr{UInt8}, Ref{Csize_t}),
             evp_digest_ctx,
             pointer(out_data),
-            pointer_from_objref(out_length)) != 1
+            out_length) != 1
             throw(OpenSSLError())
         end
     end
@@ -3212,8 +3212,9 @@ function digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signatu
             verified = digest_verify_final(md_ctx, signature)
 
             verified == 1 && return true
-            verified == 0 && return false
-            throw(OpenSSLError())
+
+            clear_errors!()
+            return false
         end
     finally
     	finalize(md_ctx)
