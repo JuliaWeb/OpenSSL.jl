@@ -32,10 +32,36 @@ end
 bio_set_read_retry(bio::BIO) = bio_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY)
 bio_clear_flags(bio::BIO) = bio_set_flags(bio, 0x00)
 
+"""
+    What the stream BIOs point at: the socket, and the write side's state.
+
+The write BIO must not write to the socket during one of the package's own SSL calls:
+those run under `ssl.lock`, which reads need too, so a socket write that waits for the
+peer there stops the reads (#72). While such a call runs (`incall`, set under
+`ssl.lock`), the callback appends the ciphertext to `buf` instead, and the call's task
+writes it to the socket once it has released the lock (`sendout!`, `sendreply!`). A raw
+`SSL_*` call made on `ssl.ssl` from outside the package has `incall` false and writes
+straight to the socket.
+"""
+mutable struct BIOStreamData
+    io::TCPSocket
+    # one of the package's SSL calls is running: the write callback buffers
+    incall::Bool
+    # ciphertext the calls produced, in order, not yet written to the socket
+    buf::Vector{UInt8}
+    # a socket write of taken ciphertext is in progress; set and cleared under `ssl.lock`
+    inflight::Bool
+    # ciphertext was dropped or its socket write failed: a writer whose bytes were among
+    # it must not return as if they were sent
+    failed::Bool
+end
+
+BIOStreamData(io::TCPSocket) = BIOStreamData(io, false, UInt8[], false, false)
+
 function on_bio_stream_read(bio::BIO, out::Ptr{Cchar}, outlen::Cint)
     try
         bio_clear_flags(bio)
-        io = bio_get_data(bio)::TCPSocket
+        io = (bio_get_data(bio)::BIOStreamData).io
         n = bytesavailable(io)
         if n == 0
             bio_set_read_retry(bio)
@@ -51,8 +77,19 @@ end
 
 function on_bio_stream_write(bio::BIO, in::Ptr{Cchar}, inlen::Cint)::Cint
     try
-        io = bio_get_data(bio)::TCPSocket
-        written = unsafe_write(io, in, inlen)
+        data = bio_get_data(bio)::BIOStreamData
+        if data.incall
+            # produced under `ssl.lock`: buffered, the call's task sends it after
+            buf = data.buf
+            n = length(buf)
+            resize!(buf, n + inlen)
+            GC.@preserve buf unsafe_copyto!(pointer(buf) + n, Ptr{UInt8}(in), inlen)
+            return inlen
+        end
+        # a raw call from outside the package: straight to the socket. Such a call may
+        # not overlap the package's own on the same stream (OpenSSL's own rule for one
+        # SSL object): what the package has buffered would be overtaken on the wire
+        written = unsafe_write(data.io, in, inlen)
         return Cint(written)
     catch e
         # we don't want to throw a Julia exception from a C callback; -1 fails the
@@ -418,16 +455,22 @@ mutable struct SSLStream <: IO
     peekbuf::Base.RefValue{UInt8}
     peekbytes::Base.RefValue{Csize_t}
     closed::Bool
+    # what the BIOs point at, see `BIOStreamData`
+    data::BIOStreamData
+    # held while buffered ciphertext is written to the socket: it leaves in the order
+    # it was produced, and whoever releases this lock has sent all there was
+    sendlock::ReentrantLock
+    # one `unsafe_write` at a time, so that concurrent writes arrive whole
+    writelock::ReentrantLock
 
     function SSLStream(ssl_context::SSLContext, io::TCPSocket)
+        data = BIOStreamData(io)
         # Create a read and write BIOs.
-        bio_read::BIO = BIO(io; finalize=false)
-        bio_write::BIO = BIO(io; finalize=false)
+        bio_read::BIO = BIO(data; finalize=false)
+        bio_write::BIO = BIO(data; finalize=false)
         ssl = SSL(ssl_context, bio_read, bio_write)
-        x = new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false)
-        # no close_notify from the finalizer: sending it is a socket write, which can
-        # wait for the peer, and a finalizer may not switch tasks
-        finalizer(x -> close(x, false), x)
+        x = new(ssl, ssl_context, bio_read, bio_write, io, ReentrantLock(), ReentrantLock(), Ref{Csize_t}(0), Ref{Csize_t}(0), Ref{UInt8}(0x00), Ref{Csize_t}(0), false, data, ReentrantLock(), ReentrantLock())
+        finalizer(finalize_stream, x)
         return x
     end
 end
@@ -442,6 +485,133 @@ Base.isopen(ssl::SSLStream)::Bool = Base.@lock(ssl.lock, !ssl.closed)
 Base.iswritable(ssl::SSLStream)::Bool = isopen(ssl) && isopen(ssl.io)
 @noinline throwio(op) = throw(Base.IOError("$op requires ssl to be open", 0))
 
+# Writes the buffered ciphertext to the socket, with `sendlock` held by the caller, and
+# releases the lock. The buffer is taken under `ssl.lock`, so it holds everything the
+# calls so far produced, in order; and the lock is released under `ssl.lock` too, once
+# the buffer was seen empty: a call that appends after that finds the lock free when it
+# tries it (`sendreply!`), one that appended before had its bytes seen here. So a
+# reader's reply never waits behind a parked writer, and never gets stuck. A closed
+# stream is no exception: what `close` buffered, the close_notify, goes out this way.
+function drainlocked!(ssl::SSLStream)
+    data = ssl.data
+    while true
+        out = Base.@lock ssl.lock begin
+            data.inflight = false
+            if isempty(data.buf)
+                unlock(ssl.sendlock)
+                nothing
+            else
+                out = data.buf
+                data.buf = UInt8[]
+                data.inflight = true
+                out
+            end
+        end
+        out === nothing && return
+        try
+            write(ssl.io, out)
+        catch
+            try
+                Base.@lock ssl.lock begin
+                    data.inflight = false
+                    data.failed = true
+                end
+                # closed before the lock is released: the next sender finds the stream
+                # closed rather than the dead socket
+                close(ssl, false)
+            finally
+                unlock(ssl.sendlock)
+            end
+            rethrow()
+        end
+    end
+end
+
+# After one of the package's SSL calls, from a writer or the handshake: sends what it
+# produced. Returns once the bytes are on the socket, or throws the error that kept them
+# from getting there. Waiting for `sendlock` is waiting for the socket write of the
+# records produced before this call's, which this call's records queue behind.
+# Not to be called with `ssl.lock` held: the holder of `sendlock` needs that lock to
+# finish, so a caller of `write` who holds it would wait for a task that waits for it.
+function sendout!(ssl::SSLStream, op::Symbol)
+    data = ssl.data
+    lock(ssl.sendlock)
+    drainlocked!(ssl)
+    # the lock was free: whoever held it sent this call's bytes with its own, or they
+    # were dropped when the stream closed, or a socket write of them failed
+    data.failed && throwio(op)
+    return
+end
+
+# After one of the package's SSL calls from a reader (`unsafe_read`, `eof`): a reply
+# OpenSSL made to the peer, if any, goes out from a task, so that the read does not wait
+# behind a writer parked on the socket. If that writer holds `sendlock`, it sends the
+# reply before it releases the lock (see `drainlocked!`); only a free lock is taken.
+# The task is spawned, not `@async`ed: `@async` pins the calling task, the reader, to its
+# thread for good (Julia 1.7+), and the reply does not care which thread sends it.
+function sendreply!(ssl::SSLStream)
+    (Base.@lock ssl.lock isempty(ssl.data.buf)) && return
+    errormonitor(Threads.@spawn try
+        trylock(ssl.sendlock) && drainlocked!(ssl)
+    catch e
+        e isa Base.IOError || rethrow()
+    end)
+    return
+end
+
+# Closes the socket handle outright, as `close` does for a socket that never connected,
+# rather than shutting it down: the libuv write requests pending on it are cancelled, so
+# a write parked on a peer that stopped reading fails instead of waiting forever.
+# Goes by the handle, not `io.status`: Base marks the socket closing itself when the
+# peer's FIN arrives (Julia 1.6, 1.7) or after an earlier `close(io)`, and in that state
+# the handle still waits for its write queue to drain, which a parked write never does.
+function forceclose!(io::TCPSocket)
+    Base.iolock_begin()
+    try
+        handle = io.handle
+        if handle != C_NULL && io.status != Base.StatusClosed &&
+                ccall(:uv_is_closing, Cint, (Ptr{Cvoid},), handle) == 0
+            @static if Sys.iswindows()
+                # libuv's close cancels only the pending writes the calling thread
+                # issued (`CancelIo`): a write parked by a task on another thread would
+                # keep the socket open. Cancel every thread's I/O on the socket first,
+                # while the handle is still valid: the close may release it at once
+                sock = Ref{Ptr{Cvoid}}(C_NULL)
+                if ccall(:uv_fileno, Cint, (Ptr{Cvoid}, Ptr{Ptr{Cvoid}}), handle, sock) == 0
+                    ccall((:CancelIoEx, "kernel32"), stdcall, Cint,
+                        (Ptr{Cvoid}, Ptr{Cvoid}), sock[], C_NULL)
+                end
+            end
+            ccall(:jl_forceclose_uv, Cvoid, (Ptr{Cvoid},), handle)
+            io.status = Base.StatusClosing
+        end
+    finally
+        Base.iolock_end()
+    end
+    return
+end
+
+# The finalizer neither waits nor starts a task, so no close_notify: Julia runs every
+# finalizer at exit, also those of live streams, and a task started then can crash the
+# process. It frees the SSL object and closes the socket handle outright. A stream
+# whose lock is held is finalized at a later collection instead (the manual's pattern
+# for finalizers that need a lock).
+function finalize_stream(ssl::SSLStream)
+    if islocked(ssl.lock) || !trylock(ssl.lock)
+        finalizer(finalize_stream, ssl)
+        return
+    end
+    try
+        ssl.closed && return
+        ssl.closed = true
+        free(ssl.ssl)
+    finally
+        unlock(ssl.lock)
+    end
+    forceclose!(ssl.io)
+    return
+end
+
 # this is a macro, but should be a function, but closures are stupid slow
 # we use this to standardize the error handling for all of the SSL_*_ex functions
 macro geterror(ssl, op, expr)
@@ -453,8 +623,15 @@ macro geterror(ssl, op, expr)
             $ssl.closed && throwio($op)
             # clear the current error queue before openssl ccall
             clear_errors!()
-            # do the ccall
-            _ret = $expr
+            # do the ccall; what it writes is buffered meanwhile (see `BIOStreamData`),
+            # the caller sends it once the lock is released
+            _data = $ssl.data
+            _data.incall = true
+            _ret = try
+                $expr
+            finally
+                _data.incall = false
+            end
             # we want to return one of our SSL return codes, regardless of error
             # SSL_peek_ex, SSL_write_ex, SSL_connect, and SSL_read_ex all return 1 on success
             if _ret == 1
@@ -494,29 +671,40 @@ macro geterror(ssl, op, expr)
     end)
 end
 
+# what goes to `SSL_write_ex` in one call: bounds the ciphertext buffered under
+# `ssl.lock` before it is sent
+const SSL_WRITE_CHUNK = UInt(64 * 1024)
+
 function Base.unsafe_write(ssl::SSLStream, in_buffer::Ptr{UInt8}, in_length::UInt)
     nwritten = 0
     # per call, not per stream: the count is read back after `@geterror` released
     # `ssl.lock`, and another task's `SSL_write_ex` could overwrite a shared one first
     writebytes = Ref{Csize_t}(0)
-    while nwritten < in_length
-        ret = @geterror ssl :unsafe_write ccall(
-            (:SSL_write_ex, libssl),
-            Cint,
-            (SSL, Ptr{Cvoid}, Cint, Ptr{Csize_t}),
-            ssl.ssl,
-            in_buffer,
-            in_length,
-            writebytes
-        )
-        if ret == SSL_ERROR_NONE
-            nwritten += writebytes[]
-        elseif ret == SSL_ERROR_WANT_WRITE
-            flush(ssl.io)
-        elseif ret == SSL_ERROR_WANT_READ
-            # this means write is waiting for more data from the underlying socket
-            # so call eof on the socket to wait for more bytes to come in
-            eof(ssl.io) && throw(EOFError())
+    # one writer at a time, so that a write arrives whole however many tasks write
+    Base.@lock ssl.writelock begin
+        while nwritten < in_length
+            # without SSL_MODE_ENABLE_PARTIAL_WRITE a call writes all or nothing, so a
+            # retry after WANT_READ/WANT_WRITE resubmits the same chunk
+            chunk = min(in_length - nwritten, SSL_WRITE_CHUNK)
+            ret = @geterror ssl :unsafe_write ccall(
+                (:SSL_write_ex, libssl),
+                Cint,
+                (SSL, Ptr{Cvoid}, Csize_t, Ptr{Csize_t}),
+                ssl.ssl,
+                in_buffer + nwritten,
+                chunk,
+                writebytes
+            )
+            sendout!(ssl, :write)
+            if ret == SSL_ERROR_NONE
+                nwritten += writebytes[]
+            elseif ret == SSL_ERROR_WANT_WRITE
+                flush(ssl.io)
+            elseif ret == SSL_ERROR_WANT_READ
+                # this means write is waiting for more data from the underlying socket
+                # so call eof on the socket to wait for more bytes to come in
+                eof(ssl.io) && throw(EOFError())
+            end
         end
     end
     return Base.bitcast(Int, in_length)
@@ -596,6 +784,7 @@ end
 function Sockets.connect(ssl::SSLStream; require_ssl_verification::Bool=true)
     while true
         ret = @geterror ssl :connect ssl_connect(ssl.ssl)
+        sendout!(ssl, :connect)
         if ret == SSL_ERROR_NONE
             break
         elseif ret == SSL_ERROR_WANT_READ
@@ -688,6 +877,7 @@ function Base.unsafe_read(ssl::SSLStream, buf::Ptr{UInt8}, nbytes::UInt)
             nbytes - nread,
             readbytes
         )
+        sendreply!(ssl)
         if ret == SSL_ERROR_NONE
             nread += Base.bitcast(Int, readbytes[])
         elseif ret == SSL_ERROR_WANT_READ
@@ -778,6 +968,7 @@ function Base.eof(ssl::SSLStream)::Bool
                 1,
                 peekbytes
             )
+            sendreply!(ssl)
             if ret == SSL_ERROR_NONE
                 return false
             elseif ret == SSL_ERROR_WANT_WRITE
@@ -803,18 +994,38 @@ function Base.eof(ssl::SSLStream)::Bool
     return !isopen(ssl)
 end
 
+# how long `close` lets the socket write of what is left to send (an alert from a
+# failed call, the close_notify) take before it closes the socket outright: a peer that
+# stopped reading would otherwise hold the stream's `sendlock`, and the socket, open
+# forever
+const CLOSE_NOTIFY_GRACE = 5.0
+
 """
     Close SSL stream.
 """
 function Base.close(ssl::SSLStream, shutdown::Bool=true)
-    Base.@lock ssl.lock begin
+    data = ssl.data
+    inflight = Base.@lock ssl.lock begin
         ssl.closed && return
         ssl.closed = true
-        if shutdown
+        if data.inflight
+            # a socket write of taken ciphertext is in progress, and may be parked on a
+            # peer that stopped reading: nothing more goes out, not even a close_notify,
+            # and a writer waiting on bytes still buffered is told. The write in
+            # progress is the sender's own to report
+            if !isempty(data.buf)
+                empty!(data.buf)
+                data.failed = true
+            end
+        elseif shutdown
+            # the close_notify is buffered, and sent below
+            data.incall = true
             try
                 ssl_disconnect(ssl.ssl)
             catch err
                 @debug "SSL disconnect failed" err
+            finally
+                data.incall = false
             end
             # the close_notify's socket write failing (the peer is gone, or the socket
             # already closed) fails SSL_shutdown, and OpenSSL 3.2+ records that on the
@@ -822,12 +1033,41 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
             clear_errors!()
         end
         free(ssl.ssl)
+        data.inflight
     end
-    @async try
-        Base.close(ssl.io)
-    catch e
-        e isa Base.IOError || rethrow()
+    if inflight
+        # the parked write could stay so forever: close the socket handle outright,
+        # which fails it
+        forceclose!(ssl.io)
+    else
+        # what is buffered (the alert a failed call produced, the close_notify), then
+        # the socket close, from a task: `close` does not wait on the socket. Nor does
+        # the task wait forever: a peer that has stopped reading gets the socket closed
+        # outright instead. `@async`, unlike `Threads.@spawn`, keeps the task on this
+        # thread, so a `close` just before `exit` does not have another thread start
+        # it while the process goes down
+        errormonitor(@async begin
+            # the timer covers the socket close as well: Base's close waits for the
+            # socket's pending writes to leave, which a parked raw write never does
+            grace = Timer(_ -> forceclose!(ssl.io), CLOSE_NOTIFY_GRACE)
+            try
+                try
+                    lock(ssl.sendlock)
+                    drainlocked!(ssl)
+                catch e
+                    e isa Base.IOError || rethrow()
+                end
+                try
+                    Base.close(ssl.io)
+                catch e
+                    e isa Base.IOError || rethrow()
+                end
+            finally
+                close(grace)
+            end
+        end)
     end
+    return
 end
 
 """

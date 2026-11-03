@@ -1008,8 +1008,8 @@ encrypt_init(evp_cipher_ctx::EvpCipherContext, evp_cipher::EvpCipher, symetric_k
 function cipher_update(evp_cipher_ctx::EvpCipherContext, in_data::Vector{UInt8})::Vector{UInt8}
     in_length = length(in_data)
 
-    block_size = get_block_size(evp_cipher_ctx)
-    enc_length = Int((in_length + block_size - 1) / block_size * block_size)
+    # Decrypting with padding can write up to `in_length + block_size` bytes (EVP_DecryptUpdate docs).
+    enc_length = in_length + get_block_size(evp_cipher_ctx)
 
     out_data = Vector{UInt8}(undef, enc_length)
     out_length = Ref{UInt32}(0)
@@ -1539,8 +1539,10 @@ mutable struct BIOMethod
             throw(OpenSSLError())
         end
 
+        # Not freed: the method is the process's own (`BIO_STREAM_METHOD`), used by every
+        # stream until the process ends. A finalizer would free it at exit, when Julia runs
+        # every finalizer while other threads may still create or free streams.
         bio_method = new(bio_method)
-        finalizer(free, bio_method)
 
         if ccall(
             (:BIO_meth_set_create, libcrypto),
@@ -1807,8 +1809,12 @@ Base.write(bio::BIO, out_data) = return GC.@preserve out_data unsafe_write(bio, 
 """
 mutable struct Asn1Time
     asn1_time::Ptr{Cvoid}
+    # `nothing`, or for a certificate's own time (`time_not_before`, `time_not_after`),
+    # which points into the certificate, a reference to the certificate: it keeps the
+    # certificate alive while this is, and owns the time, so `free` leaves the time alone
+    owner::Any
 
-    Asn1Time(asn1_time::Ptr{Cvoid}) = new(asn1_time)
+    Asn1Time(asn1_time::Ptr{Cvoid}, owner=nothing) = new(asn1_time, owner)
 
     Asn1Time() = Asn1Time(0)
 
@@ -1825,21 +1831,28 @@ mutable struct Asn1Time
             throw(OpenSSLError())
         end
 
-        asn1_time = new(asn1_time)
+        asn1_time = new(asn1_time, nothing)
         finalizer(free, asn1_time)
 
         return asn1_time
     end
 end
 
+# The `ASN1_TIME *` for a ccall argument declared `Ptr{Cvoid}`; with its `owner` field
+# the struct itself no longer passes as that pointer.
+Base.unsafe_convert(::Type{Ptr{Cvoid}}, asn1_time::Asn1Time) = asn1_time.asn1_time
+
 function free(asn1_time::Asn1Time)
-    ccall(
-        (:ASN1_STRING_free, libcrypto),
-        Cvoid,
-        (Asn1Time,),
-        asn1_time)
+    if asn1_time.owner === nothing
+        ccall(
+            (:ASN1_STRING_free, libcrypto),
+            Cvoid,
+            (Ptr{Cvoid},),
+            asn1_time)
+    end
 
     asn1_time.asn1_time = C_NULL
+    asn1_time.owner = nothing
     return nothing
 end
 
@@ -1847,7 +1860,7 @@ function Dates.adjust(asn1_time::Asn1Time, seconds::Second)
     adj_asn1_time = ccall(
         (:X509_gmtime_adj, libcrypto),
         Ptr{Cvoid},
-        (Asn1Time, Int64),
+        (Ptr{Cvoid}, Int64),
         asn1_time,
         seconds.value)
     if adj_asn1_time == C_NULL
@@ -1863,6 +1876,18 @@ end
 Dates.adjust(asn1_time::Asn1Time, days::Day) = Dates.adjust(asn1_time, Second(days))
 
 Dates.adjust(asn1_time::Asn1Time, years::Year) = Dates.adjust(asn1_time, Day(365 * years.value))
+
+# OpenSSL asks a PEM read for the passphrase of a block with encryption headers, which
+# any PEM text can carry. Given no callback, OpenSSL's own reads one from the terminal,
+# blocking the calling thread (and every other one, at the next collection) until someone
+# types it. This callback fails instead.
+no_passphrase(buf::Ptr{Cchar}, size::Cint, rwflag::Cint, u::Ptr{Cvoid})::Cint = Cint(-1)
+no_passphrase_callback() = @cfunction(no_passphrase, Cint, (Ptr{Cchar}, Cint, Cint, Ptr{Cvoid}))
+
+# The callback and its argument for a PEM read: OpenSSL's default callback hands over a
+# given passphrase (the argument) without asking anyone.
+pem_passphrase(::Nothing) = (no_passphrase_callback(), Cstring(C_NULL))
+pem_passphrase(passphrase::AbstractString) = (C_NULL, String(passphrase))
 
 """
     EVP_PKEY, EVP Public Key interface.
@@ -1938,21 +1963,25 @@ mutable struct EvpPKey
     end
 
     """
-        Creates a EvpPKey from PEM string.
+        EvpPKey(in_string::AbstractString; passphrase=nothing)
+
+    Read a private key from a PEM string. An encrypted key needs its `passphrase`;
+    without it the read fails.
     """
-    function EvpPKey(in_string::AbstractString)::EvpPKey
+    function EvpPKey(in_string::AbstractString; passphrase::Union{Nothing,AbstractString}=nothing)::EvpPKey
         # Create a BIO and write the PEM string.
         bio = BIO(BIOMethodMemory())
         write(bio, in_string)
 
+        callback, arg = pem_passphrase(passphrase)
         evp_pkey = ccall(
             (:PEM_read_bio_PrivateKey, libcrypto),
             Ptr{Cvoid},
-            (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
+            (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Cstring),
             bio,
             C_NULL,
-            C_NULL,
-            C_NULL)
+            callback,
+            arg)
         if evp_pkey == C_NULL
             throw(OpenSSLError())
         end
@@ -1989,20 +2018,32 @@ function Base.:(==)(evp_pkey_1::EvpPKey, evp_pkey_2::EvpPKey)
     return result == 1
 end
 
-function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL))
+"""
+    write(io::IO, evp_pkey::EvpPKey, [evp_cipher::EvpCipher]; passphrase=nothing) -> Int
+
+Write the private key `evp_pkey` to `io` in PEM format, encrypted with `evp_cipher` and
+`passphrase` when a cipher is given (both or neither), and return the number of bytes
+written.
+"""
+function Base.write(io::IO, evp_pkey::EvpPKey, evp_cipher::EvpCipher=EvpCipher(C_NULL);
+        passphrase::Union{Nothing,AbstractString}=nothing)
+    # without a passphrase OpenSSL would ask the terminal for one
+    (evp_cipher.evp_cipher == C_NULL) == (passphrase === nothing) ||
+        throw(ArgumentError("an encrypted key needs both a cipher and a passphrase"))
+    pass = passphrase === nothing ? Cstring(C_NULL) : String(passphrase)
     bio = BIO(BIOMethodMemory())
 
     GC.@preserve bio begin
         if ccall(
             (:PEM_write_bio_PrivateKey, libcrypto),
             Cint,
-            (BIO, EvpPKey, EvpCipher, Ptr{Cvoid}, Cint, Cint, Ptr{Cvoid}),
+            (BIO, EvpPKey, EvpCipher, Cstring, Cint, Ptr{Cvoid}, Ptr{Cvoid}),
             bio,
             evp_pkey,
             evp_cipher,
-            C_NULL,
-            0,
-            0,
+            pass,
+            passphrase === nothing ? 0 : sizeof(pass),
+            no_passphrase_callback(),
             C_NULL) != 1
             throw(OpenSSLError())
         end
@@ -2048,7 +2089,7 @@ function read_pubkey(pem::AbstractString)::EvpPKey
         (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
         bio,
         C_NULL,
-        C_NULL,
+        no_passphrase_callback(),
         C_NULL)
     if evp_pkey == C_NULL
         throw(OpenSSLError())
@@ -2102,7 +2143,12 @@ mutable struct StackOf{T}
     end
 end
 
+# The stack holds a reference to each element (`push!` takes one; a stack OpenSSL returns,
+# such as `get_extensions` or `unpack`, hands over its elements), and they go with it.
 function free(stack_of::StackOf{T}) where {T}
+    while length(stack_of) > 0
+        free(pop!(stack_of))
+    end
     ccall(
         (:OPENSSL_sk_free, libcrypto),
         Cvoid,
@@ -2128,7 +2174,9 @@ function Base.push!(stack_of::StackOf{T}, element::T) where {T}
     return count
 end
 
+# The element, with the stack's reference to it.
 function Base.pop!(stack_of::StackOf{T}) where {T}
+    length(stack_of) > 0 || throw(ArgumentError("stack must be non-empty"))
     ptr = ccall(
         (:OPENSSL_sk_pop, libcrypto),
         Ptr{Cvoid},
@@ -2395,7 +2443,7 @@ mutable struct X509Certificate
             (BIO, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}),
             bio,
             C_NULL,
-            C_NULL,
+            no_passphrase_callback(),
             C_NULL)
         if x509 == C_NULL
             throw(OpenSSLError())
@@ -2570,15 +2618,16 @@ function get_time_not_before(x509_cert::X509Certificate)::Asn1Time
         throw(OpenSSLError())
     end
 
-    asn1_time = Asn1Time(asn1_time)
-    return asn1_time
+    # the certificate's own time, which it frees: held through a reference of its own to
+    # the certificate, so that neither collecting nor freeing `x509_cert` frees it
+    return Asn1Time(asn1_time, X509Certificate(up_ref(x509_cert)))
 end
 
 function set_time_not_before(x509_cert::X509Certificate, asn1_time::Asn1Time)
     if ccall(
         (:X509_set1_notBefore, libcrypto),
         Cint,
-        (X509Certificate, Asn1Time),
+        (X509Certificate, Ptr{Cvoid}),
         x509_cert,
         asn1_time) != 1
         throw(OpenSSLError())
@@ -2595,15 +2644,16 @@ function get_time_not_after(x509_cert::X509Certificate)::Asn1Time
         throw(OpenSSLError())
     end
 
-    asn1_time = Asn1Time(asn1_time)
-    return asn1_time
+    # the certificate's own time, which it frees: held through a reference of its own to
+    # the certificate, so that neither collecting nor freeing `x509_cert` frees it
+    return Asn1Time(asn1_time, X509Certificate(up_ref(x509_cert)))
 end
 
 function set_time_not_after(x509_cert::X509Certificate, asn1_time::Asn1Time)
     if ccall(
         (:X509_set1_notAfter, libcrypto),
         Cint,
-        (X509Certificate, Asn1Time),
+        (X509Certificate, Ptr{Cvoid}),
         x509_cert,
         asn1_time) != 1
         throw(OpenSSLError())
@@ -3289,7 +3339,7 @@ function Base.String(asn1_time::Asn1Time)
     if ccall(
         (:ASN1_TIME_print, libcrypto),
         Cint,
-        (BIO, Asn1Time),
+        (BIO, Ptr{Cvoid}),
         bio,
         asn1_time) != 1
         throw(OpenSSLError())
