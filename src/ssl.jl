@@ -551,11 +551,13 @@ end
 # thread for good (Julia 1.7+), and the reply does not care which thread sends it.
 function sendreply!(ssl::SSLStream)
     (Base.@lock ssl.lock isempty(ssl.data.buf)) && return
-    errormonitor(Threads.@spawn try
+    # nothing waits on the task, so an error other than the socket's is logged here
+    # rather than lost with it
+    Threads.@spawn try
         trylock(ssl.sendlock) && drainlocked!(ssl)
     catch e
-        e isa Base.IOError || rethrow()
-    end)
+        e isa Base.IOError || @error "OpenSSL: sending the reply failed" exception = (e, catch_backtrace())
+    end
     return
 end
 
@@ -1045,8 +1047,9 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
         # the task wait forever: a peer that has stopped reading gets the socket closed
         # outright instead. `@async`, unlike `Threads.@spawn`, keeps the task on this
         # thread, so a `close` just before `exit` does not have another thread start
-        # it while the process goes down
-        errormonitor(@async begin
+        # it while the process goes down. Nothing waits on the task, so an error other
+        # than the socket's is logged rather than lost with it
+        @async begin
             # the timer covers the socket close as well: Base's close waits for the
             # socket's pending writes to leave, which a parked raw write never does
             grace = Timer(_ -> forceclose!(ssl.io), CLOSE_NOTIFY_GRACE)
@@ -1055,17 +1058,17 @@ function Base.close(ssl::SSLStream, shutdown::Bool=true)
                     lock(ssl.sendlock)
                     drainlocked!(ssl)
                 catch e
-                    e isa Base.IOError || rethrow()
+                    e isa Base.IOError || @error "OpenSSL: sending the close_notify failed" exception = (e, catch_backtrace())
                 end
                 try
                     Base.close(ssl.io)
                 catch e
-                    e isa Base.IOError || rethrow()
+                    e isa Base.IOError || @error "OpenSSL: closing the socket failed" exception = (e, catch_backtrace())
                 end
             finally
                 close(grace)
             end
-        end)
+        end
     end
     return
 end

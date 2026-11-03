@@ -31,6 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
+          - '1.6'
           - 'lts'
           - '1'
           - 'nightly'
@@ -44,6 +45,14 @@ jobs:
           - os: windows-latest
             version: '1'
             arch: x86
+        exclude:
+          # Julia 1.6 has no Apple Silicon build, and on Windows its socket close
+          # resets the peer (plain TCP too: a client reading after the server closed
+          # gets ECONNRESET and loses the reply), so 1.6 runs on Linux
+          - os: macOS-latest
+            version: '1.6'
+          - os: windows-latest
+            version: '1.6'
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
