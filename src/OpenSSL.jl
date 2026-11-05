@@ -516,6 +516,8 @@ end
     const EVP_CIPHER_CTX_block_size = :EVP_CIPHER_CTX_get_block_size
     const EVP_CIPHER_CTX_key_length = :EVP_CIPHER_CTX_get_key_length
     const EVP_CIPHER_CTX_iv_length = :EVP_CIPHER_CTX_get_iv_length
+    const EVP_DigestVerifyUpdate = :EVP_DigestVerifyUpdate
+    const EVP_DigestSignUpdate = :EVP_DigestSignUpdate
 else
     const SSL_get_peer_certificate = :SSL_get_peer_certificate
     const EVP_PKEY_base_id = :EVP_PKEY_base_id
@@ -525,6 +527,8 @@ else
     const EVP_CIPHER_CTX_block_size = :EVP_CIPHER_CTX_block_size
     const EVP_CIPHER_CTX_key_length = :EVP_CIPHER_CTX_key_length
     const EVP_CIPHER_CTX_iv_length = :EVP_CIPHER_CTX_iv_length
+    const EVP_DigestVerifyUpdate = :EVP_DigestUpdate
+    const EVP_DigestSignUpdate = :EVP_DigestUpdate
 end
 
 # Locate oss-modules, which contains legacy shared library
@@ -3117,18 +3121,9 @@ end
 
 function digest_sign_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
     GC.@preserve in_data begin
-
-        # Prior to OpenSSL 3, EVP_DigestSignUpdate was a macro pointing to EVP_DigestUpdate
-        if OpenSSL.version_number() < v"3.0"
-            if ccall((:EVP_DigestUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
-                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
-                throw(OpenSSLError())
-            end
-        else
-            if ccall((:EVP_DigestSignUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
-                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
-                throw(OpenSSLError())
-            end
+        if ccall((EVP_DigestSignUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx, pointer(in_data),length(in_data)) != 1
+            throw(OpenSSLError())
         end
     end
 end
@@ -3189,7 +3184,7 @@ function digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO)
             return result
         end
     finally
-    	finalize(md_ctx)
+        finalize(md_ctx)
     end
 end
 
@@ -3209,17 +3204,9 @@ end
 
 function digest_verify_update(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})
     GC.@preserve in_data begin
-        # Prior to OpenSSL 3, EVP_DigestVerifyUpdate was a macro pointing to EVP_DigestUpdate
-        if OpenSSL.version_number() < v"3.0"
-            if ccall((:EVP_DigestUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
-                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
-                throw(OpenSSLError())
-            end
-        else
-            if ccall((:EVP_DigestVerifyUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
-                evp_digest_ctx, pointer(in_data),length(in_data)) != 1
-                throw(OpenSSLError())
-            end
+        if ccall((EVP_DigestVerifyUpdate, libcrypto), Cint, (EvpDigestContext, Ptr{UInt8}, Csize_t),
+            evp_digest_ctx, pointer(in_data),length(in_data)) != 1
+            throw(OpenSSLError())
         end
     end
 end
@@ -3241,13 +3228,13 @@ end
 """
     digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signature::Vector{UInt8}) -> Bool
 
-Verifies a digital signature on data read from an IO stream `io` using the provided key `evp_pkey` and hash function `evp_digest`.
-Returns `true` if the signature is valid, `false` otherwise.
+Verifies a digital `signature` on data read from an IO stream `io` using the provided key `evp_pkey` and hash function `evp_digest`.
 
-Throws an `OpenSSLError` if an error occurs during the verification process.
+Returns `true` if the `signature` is valid, `false` for any signature that does not verify, including a malformed one.
+Throws `OpenSSLError` if `evp_pkey` and `evp_digest` can't be used together or hashing fails.
 """
 function digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signature::Vector{UInt8})
-	md_ctx = EvpDigestContext()
+    md_ctx = EvpDigestContext()
 
     try
         GC.@preserve md_ctx evp_digest evp_pkey signature begin
@@ -3267,7 +3254,7 @@ function digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signatu
             return false
         end
     finally
-    	finalize(md_ctx)
+        finalize(md_ctx)
     end
 end
 
