@@ -481,6 +481,112 @@ end
     @test OpenSSL.hmac(OpenSSL.EvpSHA256(), data, 0x01:0x14) == OpenSSL.hmac(OpenSSL.EvpSHA256(), data, collect(0x01:0x14))
 end
 
+
+@testset "DigestSignAndVerify" begin
+	function testSignAndVerify(evp_pkey::EvpPKey, evp_digest::OpenSSL.EvpDigest, data)
+		io = IOBuffer()
+		# Save the public key
+		OpenSSL.write_pubkey(io, evp_pkey)
+		pubkey_pem = String(take!(io))
+
+		# Sign data with the private key
+		io = IOBuffer(data)
+		signature = OpenSSL.digest_sign(evp_digest, evp_pkey, io)
+
+		# Read the public key and verify the signature
+		pub_evp_pkey = OpenSSL.read_pubkey(pubkey_pem)
+		io = IOBuffer(data)
+		return OpenSSL.digest_verify(evp_digest, pub_evp_pkey, io, signature)
+	end
+
+	@testset "SignWithRSAKey" begin
+		evp_pkey = EvpPKey(rsa_generate_key())
+	    @test testSignAndVerify(evp_pkey, OpenSSL.EvpSHA256(), "My data to sign and verify.")
+	end
+
+	@testset "SignWithECKey" begin
+		evp_pkey = EvpPKey(OpenSSL.ec_generate_key("prime256v1"))
+		@test testSignAndVerify(evp_pkey, OpenSSL.EvpSHA256(), "My data to sign and verify.")
+	end
+
+	@testset "VerificationFails" begin
+		data = "Data to sign and verify."
+		evp_digest = OpenSSL.EvpSHA256()
+
+		evp_pkey = EvpPKey(rsa_generate_key())
+		io = IOBuffer()
+		# Save the public key
+		OpenSSL.write_pubkey(io, evp_pkey)
+		pubkey_pem = String(take!(io))
+
+		# Sign data with the private key
+		io = IOBuffer(data)
+		signature = OpenSSL.digest_sign(evp_digest, evp_pkey, io)
+
+		# Read the public key and verify the signature
+		pub_evp_pkey = OpenSSL.read_pubkey(pubkey_pem)
+
+		# Different hash function should fail
+		io = IOBuffer(data)
+		@test OpenSSL.digest_verify(OpenSSL.EvpSHA384(), pub_evp_pkey, io, signature) == false
+
+		io = IOBuffer(data)
+		# Truncated signature should fail
+		sign2 = signature[1:end-2]
+		@test OpenSSL.digest_verify(evp_digest, pub_evp_pkey, io, sign2) == false
+
+		# Different data should fail
+		io2 = IOBuffer("Hello world")
+		@test OpenSSL.digest_verify(evp_digest, pub_evp_pkey, io2, signature) == false
+
+		# Should fail with a different public key
+		evp_pkey2 = EvpPKey(rsa_generate_key())
+		io = IOBuffer()
+		OpenSSL.write_pubkey(io, evp_pkey2)
+		pubkey_pem2 = String(take!(io))
+		pub_evp_pkey2 = OpenSSL.read_pubkey(pubkey_pem2)
+
+		io = IOBuffer(data)
+		@test OpenSSL.digest_verify(evp_digest, pub_evp_pkey2, io, signature) == false
+
+		# Tests failing with EC key
+		evp_pkey = EvpPKey(OpenSSL.ec_generate_key("prime256v1"))
+		io = IOBuffer()
+		# Save the public key
+		OpenSSL.write_pubkey(io, evp_pkey)
+		pubkey_pem = String(take!(io))
+
+		# Sign data with the private key
+		io = IOBuffer(data)
+		signature = OpenSSL.digest_sign(evp_digest, evp_pkey, io)
+
+		# Read the public key and verify the signature
+		pub_evp_pkey = OpenSSL.read_pubkey(pubkey_pem)
+
+
+		# Different hash function should fail
+		io = IOBuffer(data)
+		@test OpenSSL.digest_verify(OpenSSL.EvpSHA384(), pub_evp_pkey, io, signature) == false
+
+		# Different data should fail
+		io2 = IOBuffer("Hello world")
+		@test OpenSSL.digest_verify(evp_digest, pub_evp_pkey, io2, signature) == false
+
+		# Empty signature with EC key should only return false and not leave dangling error messages
+		io = IOBuffer(data)
+		empty_signature = Vector{UInt8}(undef, 0)
+		@test OpenSSL.digest_verify(evp_digest, pub_evp_pkey, io, empty_signature) == false
+		# Make sure errors are cleared
+  		err_msg = OpenSSL.get_error()
+    	@test err_msg == ""
+
+		# Truncated signature with EC key should not throw but only return false
+		io = IOBuffer(data)
+		@test OpenSSL.digest_verify(evp_digest, pub_evp_pkey, io, signature[1:end-2]) == false
+	end
+end
+
+
 @testset "SelfSignedCertificate" begin
     x509_certificate = X509Certificate()
 
