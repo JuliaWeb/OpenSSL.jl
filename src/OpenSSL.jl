@@ -3293,7 +3293,7 @@ function get_error()::String
     # Check existing error messages stored in task TLS.
     if haskey(task_local_storage(), :openssl_err)
         # Copy existing error from task TLS.
-        tls_msg = task_local_storage(:openssl_err)
+        tls_msg = task_local_storage(:openssl_err)::String
         delete!(task_local_storage(), :openssl_err)
 
         # Clear the error queue, print the error messages to the memory BIO.
