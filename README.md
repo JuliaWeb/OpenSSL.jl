@@ -22,7 +22,7 @@ julia> using Pkg; Pkg.add("OpenSSL")
 The package has matured and is used in many production systems.
 But as with all open-source software, please try it out and report your experience.
 
-The package is tested against current Julia LTS (1.6), latest release (1.8), and nightly on Linux, macOS, and Windows.
+The package is tested against the current Julia LTS (1.10), the latest release, and nightly on Linux, macOS, and Windows.
 
 ## Contributing and Questions
 
