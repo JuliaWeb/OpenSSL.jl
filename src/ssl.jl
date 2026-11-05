@@ -562,9 +562,9 @@ end
 # Closes the socket handle outright, as `close` does for a socket that never connected,
 # rather than shutting it down: the libuv write requests pending on it are cancelled, so
 # a write parked on a peer that stopped reading fails instead of waiting forever.
-# Goes by the handle, not `io.status`: Base marks the socket closing itself when the
-# peer's FIN arrives (Julia 1.6, 1.7) or after an earlier `close(io)`, and in that state
-# the handle still waits for its write queue to drain, which a parked write never does.
+# Goes by the handle, not `io.status`: after an earlier `close(io)`, Base has marked the
+# socket closing, and in that state the handle still waits for its write queue to drain,
+# which a parked write never does.
 function forceclose!(io::TCPSocket)
     Base.iolock_begin()
     try
