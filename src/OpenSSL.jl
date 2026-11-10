@@ -3162,17 +3162,70 @@ function digest_sign_final(evp_digest_ctx::EvpDigestContext)::Vector{UInt8}
     return out_data
 end
 
+function digest_sign_oneshot(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8})::Vector{UInt8}
+    out_length = Ref{Csize_t}(0)
+    # A NULL signature buffer asks for the signature's length.
+    if ccall(
+        (:EVP_DigestSign, libcrypto),
+        Cint,
+        (EvpDigestContext, Ptr{UInt8}, Ref{Csize_t}, Ptr{UInt8}, Csize_t),
+        evp_digest_ctx,
+        C_NULL,
+        out_length,
+        in_data,
+        length(in_data)) != 1
+        throw(OpenSSLError())
+    end
+
+    out_data = Vector{UInt8}(undef, out_length[])
+    if ccall(
+        (:EVP_DigestSign, libcrypto),
+        Cint,
+        (EvpDigestContext, Ptr{UInt8}, Ref{Csize_t}, Ptr{UInt8}, Csize_t),
+        evp_digest_ctx,
+        out_data,
+        out_length,
+        in_data,
+        length(in_data)) != 1
+        throw(OpenSSLError())
+    end
+
+    return resize!(out_data, out_length[])
+end
+
+# EdDSA hashes the whole message itself, so OpenSSL can sign or verify it only in one call.
+is_eddsa(evp_pkey::EvpPKey) = get_key_type(evp_pkey) in (EVP_PKEY_ED25519, EVP_PKEY_ED448)
+
+# Measuring the private-key encoding (a NULL output buffer) copies no key bytes, and fails for a
+# public-only key.
+function has_private_key(evp_pkey::EvpPKey)::Bool
+    ccall((:i2d_PrivateKey, libcrypto), Cint, (EvpPKey, Ptr{Ptr{UInt8}}), evp_pkey, C_NULL) > 0 && return true
+    clear_errors!()
+    return false
+end
+
 """
-    digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO) -> Vector{UInt8}
+    OpenSSL.digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO) -> Vector{UInt8}
 
 Signs the data read from `io` using the provided hash function `evp_digest` and key `evp_pkey`. The result is returned as a vector of bytes.
+
+An Ed25519 or Ed448 key hashes the message itself, so `evp_digest` must be `EvpMDNull()`; any other
+digest throws `OpenSSLError`. Such a key signs the whole message at once, so all of `io` is read into
+memory first. A public-only Ed25519 or Ed448 key throws `ArgumentError`.
 """
 function digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO)
     md_ctx = EvpDigestContext()
 
     try
         GC.@preserve evp_pkey begin
+            # init rejects a freed key before anything reads its type
             digest_sign_init(md_ctx, evp_digest, evp_pkey)
+            if is_eddsa(evp_pkey)
+                # OpenSSL 1.1.1 crashes when it signs with a public-only EdDSA key, so refuse one on every version.
+                has_private_key(evp_pkey) ||
+                    throw(ArgumentError("signing needs a private key, but `evp_pkey` is a public Ed25519 or Ed448 key"))
+                return digest_sign_oneshot(md_ctx, read(io))
+            end
 
             while !eof(io)
                 available_bytes = bytesavailable(io)
@@ -3225,13 +3278,28 @@ function digest_verify_final(evp_digest_ctx::EvpDigestContext, signature::Vector
     return verified
 end
 
+function digest_verify_oneshot(evp_digest_ctx::EvpDigestContext, in_data::Vector{UInt8}, signature::Vector{UInt8})
+    return ccall(
+        (:EVP_DigestVerify, libcrypto),
+        Cint,
+        (EvpDigestContext, Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t),
+        evp_digest_ctx,
+        signature,
+        length(signature),
+        in_data,
+        length(in_data))
+end
+
 """
-    digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signature::Vector{UInt8}) -> Bool
+    OpenSSL.digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signature::Vector{UInt8}) -> Bool
 
 Verifies a digital `signature` on data read from an IO stream `io` using the provided key `evp_pkey` and hash function `evp_digest`.
 
 Returns `true` if the `signature` is valid, `false` for any signature that does not verify, including a malformed one.
 Throws `OpenSSLError` if `evp_pkey` and `evp_digest` can't be used together or hashing fails.
+
+An Ed25519 or Ed448 key hashes the message itself, so `evp_digest` must be `EvpMDNull()`. Such a key
+verifies the whole message at once, so all of `io` is read into memory first.
 """
 function digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signature::Vector{UInt8})
     md_ctx = EvpDigestContext()
@@ -3240,13 +3308,16 @@ function digest_verify(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO, signatu
         GC.@preserve md_ctx evp_digest evp_pkey signature begin
             digest_verify_init(md_ctx, evp_digest, evp_pkey)
 
-            while !eof(io)
-                available_bytes = bytesavailable(io)
-                in_data = read(io, available_bytes)
-                digest_verify_update(md_ctx, in_data)
+            if is_eddsa(evp_pkey)
+                verified = digest_verify_oneshot(md_ctx, read(io), signature)
+            else
+                while !eof(io)
+                    available_bytes = bytesavailable(io)
+                    in_data = read(io, available_bytes)
+                    digest_verify_update(md_ctx, in_data)
+                end
+                verified = digest_verify_final(md_ctx, signature)
             end
-
-            verified = digest_verify_final(md_ctx, signature)
 
             verified == 1 && return true
 
