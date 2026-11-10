@@ -3214,16 +3214,18 @@ digest throws `OpenSSLError`. Such a key signs the whole message at once, so all
 memory first. A public-only Ed25519 or Ed448 key throws `ArgumentError`.
 """
 function digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO)
-    eddsa = is_eddsa(evp_pkey)
-    # OpenSSL 1.1.1 crashes when it signs with a public-only EdDSA key, so refuse one on every version.
-    eddsa && !has_private_key(evp_pkey) &&
-        throw(ArgumentError("signing needs a private key, but `evp_pkey` is a public Ed25519 or Ed448 key"))
     md_ctx = EvpDigestContext()
 
     try
         GC.@preserve evp_pkey begin
+            # init rejects a freed key before anything reads its type
             digest_sign_init(md_ctx, evp_digest, evp_pkey)
-            eddsa && return digest_sign_oneshot(md_ctx, read(io))
+            if is_eddsa(evp_pkey)
+                # OpenSSL 1.1.1 crashes when it signs with a public-only EdDSA key, so refuse one on every version.
+                has_private_key(evp_pkey) ||
+                    throw(ArgumentError("signing needs a private key, but `evp_pkey` is a public Ed25519 or Ed448 key"))
+                return digest_sign_oneshot(md_ctx, read(io))
+            end
 
             while !eof(io)
                 available_bytes = bytesavailable(io)

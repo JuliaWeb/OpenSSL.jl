@@ -649,6 +649,12 @@ end
         @test_throws ArgumentError OpenSSL.digest_sign(EvpMDNull(), pubkey, IOBuffer(msg))
         @test_throws ArgumentError OpenSSL.digest_sign(EvpMDNull(), pubkey, IOBuffer(UInt8[]))
         @test OpenSSL.get_error() == ""
+
+        # a freed key is rejected, not read
+        freed = EvpPKey(pem)
+        OpenSSL.free(freed)
+        @test_throws OpenSSL.OpenSSLError OpenSSL.digest_sign(EvpMDNull(), freed, IOBuffer(msg))
+        OpenSSL.clear_errors!()
     end
 
     # the whole stream is signed and verified, not only what has arrived when the call starts
