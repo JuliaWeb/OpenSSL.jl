@@ -3196,6 +3196,14 @@ end
 # EdDSA hashes the whole message itself, so OpenSSL can sign or verify it only in one call.
 is_eddsa(evp_pkey::EvpPKey) = get_key_type(evp_pkey) in (EVP_PKEY_ED25519, EVP_PKEY_ED448)
 
+# Measuring the private-key encoding (a NULL output buffer) copies no key bytes, and fails for a
+# public-only key.
+function has_private_key(evp_pkey::EvpPKey)::Bool
+    ccall((:i2d_PrivateKey, libcrypto), Cint, (EvpPKey, Ptr{Ptr{UInt8}}), evp_pkey, C_NULL) > 0 && return true
+    clear_errors!()
+    return false
+end
+
 """
     OpenSSL.digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO) -> Vector{UInt8}
 
@@ -3203,15 +3211,19 @@ Signs the data read from `io` using the provided hash function `evp_digest` and 
 
 An Ed25519 or Ed448 key hashes the message itself, so `evp_digest` must be `EvpMDNull()`; any other
 digest throws `OpenSSLError`. Such a key signs the whole message at once, so all of `io` is read into
-memory first.
+memory first. A public-only Ed25519 or Ed448 key throws `ArgumentError`.
 """
 function digest_sign(evp_digest::EvpDigest, evp_pkey::EvpPKey, io::IO)
+    eddsa = is_eddsa(evp_pkey)
+    # OpenSSL 1.1.1 crashes when it signs with a public-only EdDSA key, so refuse one on every version.
+    eddsa && !has_private_key(evp_pkey) &&
+        throw(ArgumentError("signing needs a private key, but `evp_pkey` is a public Ed25519 or Ed448 key"))
     md_ctx = EvpDigestContext()
 
     try
         GC.@preserve evp_pkey begin
             digest_sign_init(md_ctx, evp_digest, evp_pkey)
-            is_eddsa(evp_pkey) && return digest_sign_oneshot(md_ctx, read(io))
+            eddsa && return digest_sign_oneshot(md_ctx, read(io))
 
             while !eof(io)
                 available_bytes = bytesavailable(io)

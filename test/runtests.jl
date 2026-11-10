@@ -644,6 +644,11 @@ end
         # EdDSA hashes the message itself and takes no other digest
         @test_throws OpenSSL.OpenSSLError OpenSSL.digest_sign(OpenSSL.EvpSHA512(), key, IOBuffer(msg))
         @test_throws OpenSSL.OpenSSLError OpenSSL.digest_verify(OpenSSL.EvpSHA512(), pubkey, IOBuffer(msg), sig)
+
+        # signing needs the private key; OpenSSL 1.1 crashes when it gets a public one
+        @test_throws ArgumentError OpenSSL.digest_sign(EvpMDNull(), pubkey, IOBuffer(msg))
+        @test_throws ArgumentError OpenSSL.digest_sign(EvpMDNull(), pubkey, IOBuffer(UInt8[]))
+        @test OpenSSL.get_error() == ""
     end
 
     # the whole stream is signed and verified, not only what has arrived when the call starts
