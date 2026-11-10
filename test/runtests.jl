@@ -586,6 +586,85 @@ end
 	end
 end
 
+@testset "EdDSA" begin
+    # RFC 8032 test vectors: the secret key as PKCS #8 PEM, the message, and its signature.
+    # Ed25519 section 7.1 TEST 1 and TEST 2, then Ed448 section 7.4 "Blank" and "1 octet".
+    vectors = [
+        ("""
+         -----BEGIN PRIVATE KEY-----
+         MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
+         -----END PRIVATE KEY-----
+         """,
+         "",
+         "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+        ("""
+         -----BEGIN PRIVATE KEY-----
+         MC4CAQAwBQYDK2VwBCIEIEzNCJso/5banbbDRuwRTg9bijGfNaumJNqM9u1PuKb7
+         -----END PRIVATE KEY-----
+         """,
+         "72",
+         "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
+        ("""
+         -----BEGIN PRIVATE KEY-----
+         MEcCAQAwBQYDK2VxBDsEOWyCpWLLgI0Q1jK+ichRPr9skp803fqMn2PJlg7240ij
+         UoyKP8wvBE45o/xblEkvjwMudUmiAJj5Ww==
+         -----END PRIVATE KEY-----
+         """,
+         "",
+         "533a37f6bbe457251f023c0d88f976ae2dfb504a843e34d2074fd823d41a591f2b233f034f628281f2fd7a22ddd47d7828c59bd0a21bfd3980ff0d2028d4b18a9df63e006c5d1c2d345b925d8dc00b4104852db99ac5c7cdda8530a113a0f4dbb61149f05a7363268c71d95808ff2e652600"),
+        ("""
+         -----BEGIN PRIVATE KEY-----
+         MEcCAQAwBQYDK2VxBDsEOcTqsF01cAfGMvPbtISJkk1VKwj+DDU6DUofAKzaLEY6
+         ++pnxejSh3xeO8OXplmUnvgCHpVOChInTg==
+         -----END PRIVATE KEY-----
+         """,
+         "03",
+         "26b8f91727bd62897af15e41eb43c377efb9c610d48f2335cb0bd0087810f4352541b143c4b981b7e18f62de8ccdf633fc1bf037ab7cd779805e0dbcc0aae1cbcee1afb2e027df36bc04dcecbf154336c19f0af7e0a6472905e799f1953d2a0ff3348ab21aa4adafd1d234441cf807c03a00"),
+    ]
+    publickey(key) = (io = IOBuffer(); OpenSSL.write_pubkey(io, key); OpenSSL.read_pubkey(String(take!(io))))
+
+    for (pem, msg, sig) in vectors
+        key = EvpPKey(pem)
+        pubkey = publickey(key)
+        msg = hex2bytes(msg)
+        sig = hex2bytes(sig)
+
+        # EdDSA signatures are deterministic, so signing reproduces the RFC's signature
+        @test OpenSSL.digest_sign(EvpMDNull(), key, IOBuffer(msg)) == sig
+        @test OpenSSL.digest_verify(EvpMDNull(), pubkey, IOBuffer(msg), sig)
+
+        @test !OpenSSL.digest_verify(EvpMDNull(), pubkey, IOBuffer([msg; 0x00]), sig)
+        flipped = copy(sig)
+        flipped[1] ⊻= 0x01
+        for bad in (flipped, sig[1:end-1], [sig; 0x00], UInt8[])
+            @test !OpenSSL.digest_verify(EvpMDNull(), pubkey, IOBuffer(msg), bad)
+        end
+        @test OpenSSL.get_error() == ""
+
+        # EdDSA hashes the message itself and takes no other digest
+        @test_throws OpenSSL.OpenSSLError OpenSSL.digest_sign(OpenSSL.EvpSHA512(), key, IOBuffer(msg))
+        @test_throws OpenSSL.OpenSSLError OpenSSL.digest_verify(OpenSSL.EvpSHA512(), pubkey, IOBuffer(msg), sig)
+    end
+
+    # the whole stream is signed and verified, not only what has arrived when the call starts
+    key = EvpPKey(vectors[1][1])
+    parts = ("a message ", "in three ", "parts")
+    function arriving()
+        stream = Base.BufferStream()
+        errormonitor(@async begin
+            for part in parts
+                write(stream, part)
+                yield()
+            end
+            close(stream)
+        end)
+        return stream
+    end
+    sig = OpenSSL.digest_sign(EvpMDNull(), key, arriving())
+    @test sig == OpenSSL.digest_sign(EvpMDNull(), key, IOBuffer(join(parts)))
+    @test OpenSSL.digest_verify(EvpMDNull(), publickey(key), arriving(), sig)
+end
+
 
 @testset "SelfSignedCertificate" begin
     x509_certificate = X509Certificate()
